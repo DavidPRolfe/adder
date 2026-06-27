@@ -105,3 +105,20 @@ fn loop_accumulator_mutates_outer_binding() {
     assert!(o.status.success(), "accumulator should run; stderr:\n{}", stderr(&o));
     assert_eq!(stdout(&o).trim(), "10");
 }
+
+// ===========================================================================
+// Structs & methods — a method mutates `self` in place (via `self.field = …`),
+// and the caller observes the change. Methods are defined only in `impl`.
+// ===========================================================================
+
+#[test]
+fn method_mutates_self_in_place() {
+    let o = run_fixture("examples/shapes.adder");
+    assert!(o.status.success(), "shapes should run; stderr:\n{}", stderr(&o));
+    let out = stdout(&o);
+    let lines: Vec<&str> = out.lines().collect();
+    // Before grow: area 12.0; a returned copy: area 48.0; after grow: area 1200.0.
+    assert!(lines[0].ends_with("area 12.0"), "got {:?}", lines);
+    assert!(lines[1].ends_with("area 48.0"), "got {:?}", lines);
+    assert!(lines[2].ends_with("area 1200.0"), "got {:?}", lines);
+}

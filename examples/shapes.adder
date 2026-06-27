@@ -1,0 +1,44 @@
+## Structs, methods, and self — a little geometry.
+
+struct Point:
+    x: Float
+    y: Float
+
+struct Rectangle:
+    origin: Point
+    width: Float
+    height: Float
+
+# Methods live in an `impl` block — the one and only place methods are defined.
+impl Rectangle:
+    fn area(self) returns Float:
+        return self.width * self.height
+
+    ## Mutates the rectangle in place through `self`.
+    fn grow(self, factor: Float):
+        self.width = self.width * factor
+        self.height = self.height * factor
+
+    ## Reads self and builds a fresh, scaled rectangle (self is unchanged).
+    fn scaled(self, factor: Float) returns Rectangle:
+        return Rectangle(self.origin, self.width * factor, self.height * factor)
+
+    ## Calls another method on self and interpolates fields.
+    fn describe(self) returns String:
+        return "Rectangle at ({self.origin.x}, {self.origin.y}) — area {self.area()}"
+
+fn main():
+    r = Rectangle(Point(0.0, 0.0), 3.0, 4.0)
+    print(r.describe())                       # area 12.0
+
+    # A method that returns a new value — r is untouched.
+    big = r.scaled(2.0)
+    print(big.describe())                     # area 48.0
+
+    # A method that mutates self in place.
+    r.grow(10.0)
+    print(r.describe())                       # area 1200.0
+
+    # Named construction + the auto-derived Show rendering.
+    unit = Rectangle(origin: Point(x: 1.0, y: 1.0), width: 1.0, height: 1.0)
+    print(unit)

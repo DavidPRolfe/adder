@@ -201,7 +201,7 @@ binding     = "val" NAME [ ":" type ] "=" expr      # immutable, single-assignme
             | NAME "=" expr                         # inferred mutable binding
 
 assignment  = target "=" expr
-target      = NAME { "." NAME | "[" expr "]" }      # name, field, or index l-value
+target      = ( NAME | "self" ) { "." NAME | "[" expr "]" }   # name/self, field, or index l-value
 
 return_stmt = "return" [ expr ]
 ```
@@ -211,7 +211,9 @@ Disambiguation: a line beginning with `NAME` is a **binding/assignment** iff a t
 assignment to a plain `NAME` introduces it; a later `NAME = …` reassigns it (and
 reassigning a `val` is the semantic error from the MVP definition-of-done). `count = 0`
 introduces, `count = count + 1` reassigns, `p.x = 5.0` / `xs[0] = v` mutate through a
-`target`.
+`target`. A line beginning with `self` is likewise an assignment when a top-level `=`
+follows a non-empty `self.field` / `self[i]` path (a bare `self` is not assignable) —
+this is how a method mutates its receiver.
 
 ### 4.2 Compound statements
 
@@ -247,8 +249,8 @@ param    = "self"                       # method receiver: first param only, unt
 - Signatures are fully annotated: every non-`self` parameter has a type; a result type
   is given by `returns type`, and omitted for a unit-returning function. M1 has **no**
   default or named function parameters.
-- `self` is only valid as the first parameter of a method declared inside a `struct` or
-  `impl` body (§4.4–4.5).
+- `self` is only valid as the first parameter of a method declared inside an `impl`
+  body (§4.6).
 - The body is a value-producing suite: an explicit `return`, or the final expression as
   an implicit return.
 
@@ -256,13 +258,13 @@ param    = "self"                       # method receiver: first param only, unt
 
 ```
 struct_decl   = "struct" NAME ":" struct_body
-struct_body   = NEWLINE INDENT struct_member { struct_member } DEDENT
-struct_member = field_decl | fn_decl
+struct_body   = NEWLINE INDENT field_decl { field_decl } DEDENT
 field_decl    = NAME ":" type NEWLINE
 ```
 
-Fields are mutable by default (no per-field `val` in M1). Inherent methods may be
-written inline in the struct body or in a separate `impl` block (§4.5).
+Fields are mutable by default (no per-field `val` in M1). A struct body holds **only**
+fields; methods are defined in a separate `impl` block (§4.6), so there is exactly one
+way to add a method. (A `fn` in a struct body is a parse error.)
 
 ### 4.5 Enums
 

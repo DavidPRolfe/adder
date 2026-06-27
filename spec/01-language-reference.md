@@ -211,6 +211,7 @@ struct Point:
     x: Float
     y: Float
 
+impl Point:
     fn distance_to(self, other: Point) returns Float:
         dx = self.x - other.x
         dy = self.y - other.y
@@ -221,7 +222,9 @@ q = Point(3.0, 4.0)         # positional also allowed
 d = p.distance_to(q)
 ```
 
-Fields are mutable by default (`p.x = 5.0`). *(Open question: per-field `val`.)*
+A struct body holds only fields; methods live in an `impl` block (§7) — there is one
+way to add a method. Fields are mutable by default (`p.x = 5.0`), and a method mutates
+its receiver through `self` (`self.x = 5.0`). *(Open question: per-field `val`.)*
 
 ---
 
@@ -524,6 +527,7 @@ fn max[T: Ord](a: T, b: T) returns T:
 struct Stack[T]:
     items: List[T]
 
+impl Stack[T]:
     fn push(self, x: T):
         self.items.append(x)
 

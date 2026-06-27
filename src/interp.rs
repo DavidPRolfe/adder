@@ -355,13 +355,8 @@ impl Interp {
         for stmt in &program.stmts {
             match &stmt.kind {
                 StmtKind::Struct(s) => {
-                    let rc = Rc::new(s.clone());
-                    for m in &s.methods {
-                        self.registry
-                            .methods
-                            .insert((s.name.clone(), m.name.clone()), Rc::new(m.clone()));
-                    }
-                    self.registry.structs.insert(s.name.clone(), rc);
+                    // Methods live only in `impl` blocks; a struct body is fields.
+                    self.registry.structs.insert(s.name.clone(), Rc::new(s.clone()));
                 }
                 StmtKind::Enum(e) => {
                     for v in &e.variants {

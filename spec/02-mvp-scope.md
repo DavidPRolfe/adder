@@ -60,7 +60,7 @@ inference, and broader static type checking, are a later milestone.
 
 **Structs**
 - Declaration, named + positional construction, field access, mutable fields,
-  inherent methods (`fn` inside the struct or an `impl Type` block).
+  inherent methods (defined in an `impl Type` block — not in the struct body).
 
 **Enums + match**
 - Variants with positional/named data.

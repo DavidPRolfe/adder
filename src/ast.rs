@@ -206,13 +206,13 @@ pub enum Param {
     Named { name: String, ty: Type },
 }
 
-/// A struct declaration (grammar §4.4): fields plus inline inherent methods.
+/// A struct declaration (grammar §4.4): a set of fields. Methods are defined
+/// separately in an `impl` block (§4.6) — a `fn` in a struct body is a parse
+/// error, so there is exactly one place methods live.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDecl {
     pub name: String,
     pub fields: Vec<FieldDecl>,
-    /// Methods written inline in the struct body (more may arrive via `impl`).
-    pub methods: Vec<FnDecl>,
     pub doc: Option<String>,
     pub span: Span,
 }

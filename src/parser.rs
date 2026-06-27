@@ -251,6 +251,10 @@ impl<'a> Parser<'a> {
             TokenKind::Name(_) if self.looks_like_binding_or_assign() => {
                 self.parse_binding_or_assign()
             }
+            // A line starting with `self` is a `self.field`/`self[i]`
+            // assignment iff a top-level `=` follows a non-empty path. A bare
+            // `self` is not assignable and falls through to an expression.
+            TokenKind::SelfKw if self.looks_like_self_assign() => self.parse_self_assign(),
             _ => {
                 let expr = self.parse_expr()?;
                 let span = expr.span;
@@ -400,26 +404,7 @@ impl<'a> Parser<'a> {
         }
 
         // Either a plain-name binding/assignment or a path assignment.
-        let mut path = Vec::new();
-        let mut last_span = name_span;
-        loop {
-            match self.peek() {
-                TokenKind::Dot => {
-                    self.advance();
-                    let (field, fspan) = self.expect_name("a field name after `.`")?;
-                    last_span = fspan;
-                    path.push(TargetSeg::Field(field));
-                }
-                TokenKind::LBracket => {
-                    self.advance();
-                    let idx = self.parse_expr()?;
-                    let close = self.expect(&TokenKind::RBracket, "`]` to close an index")?;
-                    last_span = close.span;
-                    path.push(TargetSeg::Index(idx));
-                }
-                _ => break,
-            }
-        }
+        let (path, last_span) = self.parse_target_path(name_span)?;
 
         self.expect(&TokenKind::Eq, "`=` in an assignment")?;
         let value = self.parse_expr()?;
@@ -444,6 +429,83 @@ impl<'a> Parser<'a> {
                 span,
             })
         }
+    }
+
+    /// Parse a target path `{ ".NAME" | "[" expr "]" }` after a base, returning
+    /// the segments and the span of the last one (or `base_span` if empty).
+    fn parse_target_path(&mut self, base_span: Span) -> PResult<(Vec<TargetSeg>, Span)> {
+        let mut path = Vec::new();
+        let mut last_span = base_span;
+        loop {
+            match self.peek() {
+                TokenKind::Dot => {
+                    self.advance();
+                    let (field, fspan) = self.expect_name("a field name after `.`")?;
+                    last_span = fspan;
+                    path.push(TargetSeg::Field(field));
+                }
+                TokenKind::LBracket => {
+                    self.advance();
+                    let idx = self.parse_expr()?;
+                    let close = self.expect(&TokenKind::RBracket, "`]` to close an index")?;
+                    last_span = close.span;
+                    path.push(TargetSeg::Index(idx));
+                }
+                _ => break,
+            }
+        }
+        Ok((path, last_span))
+    }
+
+    /// Lookahead: does a line starting with `self` begin a `self.field` /
+    /// `self[i]` assignment? True iff at least one path segment is followed by a
+    /// top-level `=`. (A bare `self =` is not an assignment.)
+    fn looks_like_self_assign(&self) -> bool {
+        let mut i = 1; // index 0 is `self`
+        let mut saw_segment = false;
+        loop {
+            match self.peek_n(i) {
+                TokenKind::Dot => {
+                    if matches!(self.peek_n(i + 1), TokenKind::Name(_)) {
+                        i += 2;
+                        saw_segment = true;
+                    } else {
+                        return false;
+                    }
+                }
+                TokenKind::LBracket => {
+                    match self.skip_balanced(i, &TokenKind::LBracket, &TokenKind::RBracket) {
+                        Some(next) => {
+                            i = next;
+                            saw_segment = true;
+                        }
+                        None => return false,
+                    }
+                }
+                TokenKind::Eq => return saw_segment,
+                _ => return false,
+            }
+        }
+    }
+
+    /// Parse a `self`-rooted assignment: `self ( ".NAME" | "[" expr "]" )+ "=" expr`.
+    /// The l-value `base` is the string `"self"`, which the interpreter resolves
+    /// to the method receiver and mutates through its shared reference.
+    fn parse_self_assign(&mut self) -> PResult<Stmt> {
+        let start = self.cur_span();
+        self.advance(); // `self`
+        let (path, last_span) = self.parse_target_path(start)?;
+        self.expect(&TokenKind::Eq, "`=` in an assignment")?;
+        let value = self.parse_expr()?;
+        let span = start.merge(value.span);
+        let target_span = start.merge(last_span);
+        Ok(Stmt {
+            kind: StmtKind::Assign(Assign {
+                target: Target { base: "self".to_string(), path, span: target_span },
+                value,
+            }),
+            span,
+        })
     }
 
     // =====================================================================
@@ -601,7 +663,9 @@ impl<'a> Parser<'a> {
         Ok(params)
     }
 
-    /// `struct NAME ":" NEWLINE INDENT (field_decl | fn_decl)+ DEDENT`.
+    /// `struct NAME ":" NEWLINE INDENT field_decl+ DEDENT`. Methods are **not**
+    /// allowed in a struct body — they are defined in an `impl` block (§4.6), so
+    /// there is exactly one way to add a method.
     fn parse_struct(&mut self) -> PResult<Stmt> {
         let start = self.cur_span();
         self.advance(); // `struct`
@@ -610,11 +674,15 @@ impl<'a> Parser<'a> {
         self.skip_newlines_to_indent()?;
 
         let mut fields = Vec::new();
-        let mut methods = Vec::new();
         self.skip_newlines();
         while !matches!(self.peek(), TokenKind::Dedent | TokenKind::Eof) {
             match self.peek() {
-                TokenKind::Fn => methods.push(self.parse_fn_decl()?),
+                TokenKind::Fn => {
+                    return Err(Diagnostic::parse(
+                        "methods are defined in an `impl` block, not the struct body",
+                        self.cur_span(),
+                    ));
+                }
                 TokenKind::Name(_) => {
                     let fstart = self.cur_span();
                     let (fname, _) = self.expect_name("a field name")?;
@@ -626,7 +694,7 @@ impl<'a> Parser<'a> {
                 }
                 other => {
                     return Err(Diagnostic::parse(
-                        format!("expected a field or method, found {}", describe(other)),
+                        format!("expected a field, found {}", describe(other)),
                         self.cur_span(),
                     ));
                 }
@@ -637,7 +705,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Dedent, "end of the struct body")?;
         let span = start.merge(end);
         Ok(Stmt {
-            kind: StmtKind::Struct(StructDecl { name, fields, methods, doc: None, span }),
+            kind: StmtKind::Struct(StructDecl { name, fields, doc: None, span }),
             span,
         })
     }
@@ -2027,32 +2095,21 @@ mod tests {
         }
     }
 
-    // ----- struct with a field + inline method ---------------------------
+    // ----- struct fields; methods are impl-only --------------------------
 
     #[test]
-    fn struct_field_and_method() {
+    fn struct_with_fields() {
         // struct Point:
         //     x: Float
-        //     fn norm(self): x
         let toks = vec![
             t(TokenKind::Struct),
             name("Point"),
             t(TokenKind::Colon),
             nl(),
             t(TokenKind::Indent),
-            // x: Float
             name("x"),
             t(TokenKind::Colon),
             name("Float"),
-            nl(),
-            // fn norm(self): x
-            t(TokenKind::Fn),
-            name("norm"),
-            t(TokenKind::LParen),
-            t(TokenKind::SelfKw),
-            t(TokenKind::RParen),
-            t(TokenKind::Colon),
-            name("x"),
             nl(),
             t(TokenKind::Dedent),
             eof(),
@@ -2063,11 +2120,38 @@ mod tests {
                 assert_eq!(s.name, "Point");
                 assert_eq!(s.fields.len(), 1);
                 assert_eq!(s.fields[0].name, "x");
-                assert_eq!(s.methods.len(), 1);
-                assert_eq!(s.methods[0].name, "norm");
             }
             other => panic!("expected struct, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn struct_body_method_is_rejected() {
+        // struct Point:
+        //     fn norm(self): self
+        // -> methods belong in an `impl` block, not the struct body.
+        let toks = vec![
+            t(TokenKind::Struct),
+            name("Point"),
+            t(TokenKind::Colon),
+            nl(),
+            t(TokenKind::Indent),
+            t(TokenKind::Fn),
+            name("norm"),
+            t(TokenKind::LParen),
+            t(TokenKind::SelfKw),
+            t(TokenKind::RParen),
+            t(TokenKind::Colon),
+            t(TokenKind::SelfKw),
+            nl(),
+            t(TokenKind::Dedent),
+            eof(),
+        ];
+        let errs = parse_err(toks);
+        assert!(
+            errs.iter().any(|d| d.message.contains("impl")),
+            "error should point methods at `impl`; got {errs:?}"
+        );
     }
 
     #[test]

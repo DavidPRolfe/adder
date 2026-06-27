@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     Arg, BinOp, Binding, EnumDecl, Expr, ExprKind, FnDecl, IfStmt, ImplDecl, Param,
-    PatternKind, Payload, Program, Stmt, StmtKind, StructDecl, Type, BaseType, MatchExpr,
+    PatternKind, Payload, Program, Stmt, StmtKind, Type, BaseType, MatchExpr,
 };
 use crate::error::Diagnostic;
 use crate::token::Span;
@@ -140,11 +140,6 @@ fn walk_enum_decls(stmts: &[Stmt], f: &mut impl FnMut(&EnumDecl)) {
                 f(d);
             }
             StmtKind::Fn(decl) => walk_enum_decls(&decl.body.stmts, f),
-            StmtKind::Struct(StructDecl { methods, .. }) => {
-                for m in methods {
-                    walk_enum_decls(&m.body.stmts, f);
-                }
-            }
             StmtKind::Impl(ImplDecl { methods, .. }) => {
                 for m in methods {
                     walk_enum_decls(&m.body.stmts, f);
@@ -245,11 +240,7 @@ impl<'a> Exhaustiveness<'a> {
             }
 
             StmtKind::Fn(decl) => self.check_fn(decl),
-            StmtKind::Struct(sd) => {
-                for m in &sd.methods {
-                    self.check_fn(m);
-                }
-            }
+            StmtKind::Struct(_) => {}
             StmtKind::Impl(id) => {
                 for m in &id.methods {
                     self.check_fn(m);
@@ -528,11 +519,7 @@ impl<'a> NullNarrowing<'a> {
             }
 
             StmtKind::Fn(decl) => self.check_fn(decl),
-            StmtKind::Struct(sd) => {
-                for m in &sd.methods {
-                    self.check_fn(m);
-                }
-            }
+            StmtKind::Struct(_) => {}
             StmtKind::Impl(id) => {
                 for m in &id.methods {
                     self.check_fn(m);
