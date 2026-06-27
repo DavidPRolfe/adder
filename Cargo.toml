@@ -3,4 +3,16 @@ name = "adder"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "adder"
+path = "src/lib.rs"
+
+[[bin]]
+name = "adder"
+path = "src/main.rs"
+
 [dependencies]
+# Arbitrary-precision integers for Adder's `Int` type.
+num-bigint = "0.4"
+num-traits = "0.2"
+num-integer = "0.1"

@@ -1,0 +1,6 @@
+## Reassigning a `val` binding — must be rejected.
+
+fn main():
+    val x = 1
+    x = 2
+    print(x)

@@ -1,0 +1,7 @@
+## Cross-scope accumulator: sum should be 0+1+2+3+4 = 10.
+
+fn main():
+    sum = 0
+    for x in 0..5:
+        sum = sum + x
+    print(sum)

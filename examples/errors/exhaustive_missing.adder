@@ -1,0 +1,17 @@
+## Showcase with the Div arm removed — must be a compile-time exhaustiveness error.
+
+enum Expr:
+    Num(Float)
+    Add(Expr, Expr)
+    Mul(Expr, Expr)
+    Div(Expr, Expr)
+
+fn eval(e: Expr) returns Float:
+    return match e:
+        Num(n):    n
+        Add(a, b): eval(a) + eval(b)
+        Mul(a, b): eval(a) * eval(b)
+
+fn main():
+    program = Mul(Add(Num(1.0), Num(2.0)), Num(3.0))
+    print("= {eval(program)}")

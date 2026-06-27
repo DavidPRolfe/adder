@@ -1,0 +1,5 @@
+## A non-Bool condition — must be rejected (no truthiness).
+
+fn main():
+    if 1:
+        print("yes")
