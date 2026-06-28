@@ -1,0 +1,27 @@
+## Iterator pipelines (eager): chain built-in methods over a list, passing
+## lambdas to the higher-order stages. Each transform returns a fresh list;
+## terminals collapse to a scalar. Ranges are lists too, so the same methods
+## work over `1..=n`.
+
+fn main():
+    # filter -> map -> sum: even squares of 1..6  =>  4 + 16 + 36 = 56
+    print([1, 2, 3, 4, 5, 6].filter(n -> n % 2 == 0).map(n -> n * n).sum())  # 56
+
+    # a range is a list: square then sum 1..=4  =>  1 + 4 + 9 + 16 = 30
+    print((1..=4).map(n -> n * n).sum())                                     # 30
+
+    # fold accumulates with an explicit seed: product of 1..=5  =>  120
+    print([1, 2, 3, 4, 5].fold(1, (acc, n) -> acc * n))                      # 120
+
+    # terminals: count / any / all / find over a filtered list
+    nums = [5, 12, 8, 130, 44]
+    print(nums.filter(n -> n > 10).count())     # 3
+    print(nums.any(n -> n > 100))               # true
+    print(nums.all(n -> n > 0))                 # true
+    print(nums.find(n -> n > 10))               # 12
+
+    # transforms that reshape: take / skip / reverse / sorted
+    print([1, 2, 3, 4, 5].take(2))              # [1, 2]
+    print([1, 2, 3, 4, 5].skip(3))              # [4, 5]
+    print([3, 1, 2].sorted())                   # [1, 2, 3]
+    print([1, 2, 3].reverse())                  # [3, 2, 1]
