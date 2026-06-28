@@ -1,0 +1,16 @@
+## Maps and sets: literals, the two empty forms, dedup, and lookup.
+
+fn main():
+    # `{}` is an empty MAP; an empty SET is spelled `Set()` (spec §3).
+    print({})
+    print(Set())
+
+    # A set literal drops structural duplicates.
+    nums = {1, 2, 2, 3, 3, 3}
+    print(nums.len())
+
+    # Map lookup yields a nullable value: the value, or `null` if absent.
+    scores = {"ada": 10, "bob": 7}
+    print(scores.get("ada"))
+    print(scores.get("zzz"))
+    print(scores.keys().len())

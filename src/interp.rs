@@ -176,6 +176,9 @@ pub enum Builtin {
     Print,
     /// `panic(msg)` — aborts with `msg`; never returns normally.
     Panic,
+    /// `Set()` — constructs an empty set (the `{}` literal is an empty *map*,
+    /// so the empty set needs its own spelling; see spec §3).
+    Set,
 }
 
 /// A lexical environment / scope, shared and mutable by reference.
@@ -365,6 +368,7 @@ fn program_main_span(program: &Program) -> Span {
 fn seed_prelude(root: &Env) {
     env_define(root, "print", Value::Builtin(Builtin::Print), false);
     env_define(root, "panic", Value::Builtin(Builtin::Panic), false);
+    env_define(root, "Set", Value::Builtin(Builtin::Set), false);
 }
 
 impl Interp {
@@ -1496,6 +1500,16 @@ impl Interp {
                     None => "panic".to_string(),
                 };
                 Err(Diagnostic::runtime(format!("panic: {}", msg), span))
+            }
+            Builtin::Set => {
+                if !args.is_empty() {
+                    return Err(Diagnostic::runtime(
+                        "`Set()` takes no arguments; use `{a, b, …}` for a non-empty set"
+                            .to_string(),
+                        span,
+                    ));
+                }
+                Ok(Value::Set(Rc::new(RefCell::new(Vec::new()))))
             }
         }
     }
