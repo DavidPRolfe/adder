@@ -97,16 +97,43 @@ pub enum StmtKind {
 /// - `val x: T = e`     → `is_val = true`,  `ty = Some(T)`
 /// - `x: T = e`         → `is_val = false`, `ty = Some(T)`  (typed mutable)
 /// - `x = e`            → `is_val = false`, `ty = None`      (inferred mutable)
+///
+/// As of M2 the bound l-value is a [`Binder`]: a single `name` ([`Binder::Name`])
+/// or a tuple destructure `val (a, b) = pair` ([`Binder::Tuple`]). The `name`
+/// field is kept for the common single-name case so M1 code paths that read it
+/// stay unchanged; for the tuple form it mirrors the first destructured name as
+/// a stable best-effort label. Consumers that must distinguish the shapes read
+/// `binder`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
-    /// The bound name.
+    /// The bound name (single-name form). For a tuple binder this mirrors the
+    /// binder's first name as a stable best-effort label; read `binder` for the
+    /// authoritative shape.
     pub name: String,
+    /// The l-value being bound: a single name or a tuple destructure (M2).
+    pub binder: Binder,
     /// `true` for an immutable `val` binding; `false` for mutable.
     pub is_val: bool,
     /// Optional explicit type annotation.
     pub ty: Option<Type>,
     /// The initializer expression.
     pub value: Expr,
+}
+
+/// The l-value of a [`Binding`] or a [`ForStmt`] (M2): either a single name or a
+/// tuple of names destructured from the bound value. Mirrors
+/// [`ComprehensionBinder`]; kept distinct so the two surfaces can diverge later
+/// (e.g. nested binders) without coupling.
+///
+/// M1 only ever produced single names; [`Binder::Name`] is that case and is the
+/// default the parser emits for `for x in …` / `val x = …`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Binder {
+    /// A single name (`x`).
+    Name(String),
+    /// A tuple destructure (`(a, b, …)`), with at least two names. Bound against
+    /// a [`Tuple`](ExprKind::Tuple) value of matching arity (runtime-checked).
+    Tuple(Vec<String>),
 }
 
 /// An assignment to an existing l-value (grammar §4.1).
@@ -157,11 +184,20 @@ pub struct WhileStmt {
     pub body: Block,
 }
 
-/// `for NAME in iter: suite` (grammar §4.2). M1 expects `iter` to be a range or
-/// a list (enforced at runtime).
+/// `for binder in iter: suite` (grammar §4.2). M1 expects `iter` to be a range
+/// or a list (enforced at runtime).
+///
+/// As of M2 the loop binder is a [`Binder`]: a single `var` ([`Binder::Name`])
+/// or a tuple destructure `for (k, v) in m.items()` ([`Binder::Tuple`]). As with
+/// [`Binding`], the `var` field is kept for the single-name case (M1 code paths
+/// read it unchanged); for the tuple form it mirrors the first destructured name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForStmt {
+    /// The loop variable (single-name form). For a tuple binder this mirrors the
+    /// binder's first name; read `binder` for the authoritative shape.
     pub var: String,
+    /// The loop binder: a single name or a tuple destructure (M2).
+    pub binder: Binder,
     pub iter: Expr,
     pub body: Block,
 }

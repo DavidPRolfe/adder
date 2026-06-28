@@ -1,0 +1,81 @@
+//! M2 Wave 1-B acceptance tests — collection/comprehension surface syntax and
+//! call plumbing, run end-to-end through the real `adder` binary
+//! (`lex → parse → check → run`).
+//!
+//! Mirrors `tests/acceptance.rs`: spawn the compiled binary on a fixture, then
+//! assert on stdout / stderr / exit status. `.lines()` keeps comparisons robust
+//! to `\n` vs `\r\n` across platforms.
+//!
+//! Scope note: the iterator method table (`map`/`filter`/`.items()`/…) and the
+//! `Map`/`Set` `Show` rendering are owned by Wave 1-A, so these tests do not
+//! assert on `Map`/`Set` *printed* form — they exercise literals, tuples,
+//! comprehensions, destructuring, default/named args, and passable lambdas, and
+//! assert on the scalar / `List` results those produce.
+
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+/// Run the `adder` binary on a fixture file (path relative to the crate root).
+fn run_fixture(rel: &str) -> Output {
+    let bin = env!("CARGO_BIN_EXE_adder");
+    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    path.push(rel);
+    Command::new(bin)
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run {bin} on {}: {e}", path.display()))
+}
+
+fn stdout(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stdout).into_owned()
+}
+fn stderr(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).into_owned()
+}
+
+// ===========================================================================
+// The collections feature example runs cleanly and prints the expected lines.
+// ===========================================================================
+
+#[test]
+fn collections_example_runs() {
+    let o = run_fixture("examples/features/collections.adr");
+    assert!(
+        o.status.success(),
+        "collections.adr should run cleanly; stderr:\n{}",
+        stderr(&o)
+    );
+    let out = stdout(&o);
+    let got: Vec<&str> = out.lines().collect();
+    assert_eq!(
+        got,
+        vec![
+            "7",
+            "9",
+            "[1, 4, 16, 25]",
+            "[2, 4, 6]",
+            "11",
+            "15",
+            "apple: 3",
+            "pear: 2",
+            "fig: 5",
+            "total = 10",
+            "true",
+        ]
+    );
+}
+
+// ===========================================================================
+// A tuple-binder arity mismatch is a runtime error (and nothing extra prints).
+// ===========================================================================
+
+#[test]
+fn tuple_destructure_arity_mismatch_is_runtime_error() {
+    let o = run_fixture("examples/errors/tuple_arity.adr");
+    assert!(!o.status.success(), "mismatched tuple destructure must fail");
+    assert!(
+        stderr(&o).contains("runtime error"),
+        "should be a runtime error:\n{}",
+        stderr(&o)
+    );
+}
