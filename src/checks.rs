@@ -45,7 +45,7 @@ pub fn check(program: &Program) -> Result<(), Vec<Diagnostic>> {
     ex.run(program);
 
     // Check 2 — null-narrowing.
-    let mut nn = NullNarrowing { enums: &enums, diags: &mut diags };
+    let mut nn = NullNarrowing { diags: &mut diags };
     nn.run(program);
 
     if diags.is_empty() {
@@ -319,6 +319,12 @@ impl<'a> Exhaustiveness<'a> {
     }
 
     /// Walk an expression, checking any `match` it contains and recursing.
+    ///
+    /// Only `match` needs per-node handling (the exhaustiveness check plus
+    /// arm-body scoping); every other node is pure structural recursion, so it
+    /// is delegated to the shared [`walk_child_exprs`]. The comprehension binder
+    /// is scoped to the comprehension but is of unknown type to this lightweight
+    /// pass, so we do not add it to `scope`.
     fn check_expr(&mut self, e: &Expr, scope: &HashMap<String, ResolvedTy>) {
         match &e.kind {
             ExprKind::Match(m) => {
@@ -330,92 +336,10 @@ impl<'a> Exhaustiveness<'a> {
                     self.check_stmts(&arm.body.stmts, &mut inner);
                 }
             }
-            ExprKind::Binary { lhs, rhs, .. } => {
-                self.check_expr(lhs, scope);
-                self.check_expr(rhs, scope);
-            }
-            ExprKind::Unary { operand, .. } => self.check_expr(operand, scope),
-            ExprKind::Ternary { then, cond, otherwise } => {
-                self.check_expr(then, scope);
-                self.check_expr(cond, scope);
-                self.check_expr(otherwise, scope);
-            }
-            ExprKind::Call { callee, args } => {
-                self.check_expr(callee, scope);
-                for a in args {
-                    match a {
-                        Arg::Positional(e) => self.check_expr(e, scope),
-                        Arg::Named { value, .. } => self.check_expr(value, scope),
-                    }
-                }
-            }
-            ExprKind::Index { base, index } => {
-                self.check_expr(base, scope);
-                self.check_expr(index, scope);
-            }
-            ExprKind::Member { base, .. } => self.check_expr(base, scope),
-            ExprKind::List(items) => {
-                for it in items {
-                    self.check_expr(it, scope);
-                }
-            }
-            ExprKind::Lambda(l) => self.check_expr(&l.body, scope),
-            ExprKind::Str(s) => {
-                for part in &s.parts {
-                    if let crate::ast::StrSeg::Expr(inner) = part {
-                        self.check_expr(inner, scope);
-                    }
-                }
-            }
-            // M2 collections / comprehensions: recurse so nested `match`es are
-            // still checked. These never resolve to an enum type themselves.
-            ExprKind::Map(pairs) => {
-                for (k, v) in pairs {
-                    self.check_expr(k, scope);
-                    self.check_expr(v, scope);
-                }
-            }
-            ExprKind::Set(items) | ExprKind::Tuple(items) => {
-                for it in items {
-                    self.check_expr(it, scope);
-                }
-            }
-            ExprKind::Comprehension(c) => {
-                self.check_comprehension_exprs(c, scope, &mut |this, e, sc| {
-                    this.check_expr(e, sc)
-                });
-            }
-            // Leaves.
-            ExprKind::Int(_)
-            | ExprKind::Float(_)
-            | ExprKind::Bool(_)
-            | ExprKind::Null
-            | ExprKind::Name(_)
-            | ExprKind::SelfExpr => {}
-        }
-    }
-
-    /// Recurse into a comprehension's sub-expressions (output, iterable, filter)
-    /// with `visit`. The binder is scoped to the comprehension but is of unknown
-    /// type to this lightweight pass, so we do not add it to `scope`.
-    /// TODO(W1-B): once comprehensions evaluate, revisit scoping if needed.
-    fn check_comprehension_exprs(
-        &mut self,
-        c: &crate::ast::Comprehension,
-        scope: &HashMap<String, ResolvedTy>,
-        visit: &mut dyn FnMut(&mut Self, &Expr, &HashMap<String, ResolvedTy>),
-    ) {
-        use crate::ast::ComprehensionOutput::*;
-        match &c.output {
-            List(e) | Set(e) => visit(self, e, scope),
-            Map { key, value } => {
-                visit(self, key, scope);
-                visit(self, value, scope);
-            }
-        }
-        visit(self, &c.iter, scope);
-        if let Some(cond) = &c.cond {
-            visit(self, cond, scope);
+            // Every other node — Binary/Unary/Ternary/Call/Index/Member/List/
+            // Lambda/Str/Map/Set/Tuple/Comprehension — just recurses into its
+            // children (and the leaves recurse into nothing).
+            _ => walk_child_exprs(e, &mut |child| self.check_expr(child, scope)),
         }
     }
 
@@ -560,8 +484,6 @@ impl<'a> Exhaustiveness<'a> {
 // ===========================================================================
 
 struct NullNarrowing<'a> {
-    #[allow(dead_code)]
-    enums: &'a EnumInfo,
     diags: &'a mut Vec<Diagnostic>,
 }
 
@@ -671,7 +593,7 @@ impl<'a> NullNarrowing<'a> {
     /// `if x is not null:` narrows `x` to non-null inside the then-branch.
     /// We handle the positive then-branch narrowing only (per M1 scope).
     fn check_if(&mut self, if_stmt: &IfStmt, scope: &mut HashMap<String, NullState>) {
-        for (i, (cond, body)) in if_stmt.arms.iter().enumerate() {
+        for (cond, body) in &if_stmt.arms {
             // Each arm's condition is evaluated in the *outer* scope.
             self.check_expr_uses(cond, scope);
 
@@ -683,7 +605,6 @@ impl<'a> NullNarrowing<'a> {
 
             // For an `elif`, earlier conditions were false on this path, but we
             // don't do negative narrowing in M1 — just keep the outer scope.
-            let _ = i;
         }
         if let Some(else_body) = &if_stmt.else_body {
             let mut inner = scope.clone();
@@ -753,10 +674,7 @@ impl<'a> NullNarrowing<'a> {
                             self.check_expr_uses(base, scope);
                         }
                         for a in args {
-                            match a {
-                                Arg::Positional(e) => self.check_expr_uses(e, scope),
-                                Arg::Named { value, .. } => self.check_expr_uses(value, scope),
-                            }
+                            self.check_expr_uses(arg_expr(a), scope);
                         }
                         return;
                     }
@@ -767,10 +685,7 @@ impl<'a> NullNarrowing<'a> {
                     self.check_expr_uses(callee, scope);
                 }
                 for a in args {
-                    match a {
-                        Arg::Positional(e) => self.check_expr_uses(e, scope),
-                        Arg::Named { value, .. } => self.check_expr_uses(value, scope),
-                    }
+                    self.check_expr_uses(arg_expr(a), scope);
                 }
             }
             ExprKind::Index { base, index } => {
@@ -799,11 +714,6 @@ impl<'a> NullNarrowing<'a> {
                 }
                 self.check_expr_uses(operand, scope);
             }
-            ExprKind::Ternary { then, cond, otherwise } => {
-                self.check_expr_uses(then, scope);
-                self.check_expr_uses(cond, scope);
-                self.check_expr_uses(otherwise, scope);
-            }
             ExprKind::Match(m) => {
                 self.check_expr_uses(&m.scrutinee, scope);
                 for arm in &m.arms {
@@ -811,52 +721,13 @@ impl<'a> NullNarrowing<'a> {
                     self.check_stmts(&arm.body.stmts, &mut inner);
                 }
             }
-            ExprKind::List(items) => {
-                for it in items {
-                    self.check_expr_uses(it, scope);
-                }
-            }
-            ExprKind::Lambda(l) => self.check_expr_uses(&l.body, scope),
-            ExprKind::Str(s) => {
-                for part in &s.parts {
-                    if let crate::ast::StrSeg::Expr(inner) = part {
-                        self.check_expr_uses(inner, scope);
-                    }
-                }
-            }
-            // M2 collections / comprehensions: recurse into sub-expressions.
-            ExprKind::Map(pairs) => {
-                for (k, v) in pairs {
-                    self.check_expr_uses(k, scope);
-                    self.check_expr_uses(v, scope);
-                }
-            }
-            ExprKind::Set(items) | ExprKind::Tuple(items) => {
-                for it in items {
-                    self.check_expr_uses(it, scope);
-                }
-            }
-            ExprKind::Comprehension(c) => {
-                use crate::ast::ComprehensionOutput::*;
-                match &c.output {
-                    List(e) | Set(e) => self.check_expr_uses(e, scope),
-                    Map { key, value } => {
-                        self.check_expr_uses(key, scope);
-                        self.check_expr_uses(value, scope);
-                    }
-                }
-                self.check_expr_uses(&c.iter, scope);
-                if let Some(cond) = &c.cond {
-                    self.check_expr_uses(cond, scope);
-                }
-            }
-            // Leaves — a bare name reference on its own does not "require T".
-            ExprKind::Int(_)
-            | ExprKind::Float(_)
-            | ExprKind::Bool(_)
-            | ExprKind::Null
-            | ExprKind::Name(_)
-            | ExprKind::SelfExpr => {}
+            // Nodes that impose no required-non-null context on their children —
+            // Ternary/List/Lambda/Str/Map/Set/Tuple/Comprehension — just recurse
+            // into every sub-expression (and the leaves recurse into nothing). A
+            // comprehension binder is untracked (its element type is unknown), so
+            // it stays absent from `scope` and is never flagged. A bare `Name`
+            // reference on its own does not "require T".
+            _ => walk_child_exprs(e, &mut |child| self.check_expr_uses(child, scope)),
         }
     }
 
@@ -883,6 +754,99 @@ fn binder_names(binder: &Binder) -> Vec<&String> {
     match binder {
         Binder::Name(n) => vec![n],
         Binder::Tuple(names) => names.iter().collect(),
+    }
+}
+
+/// The expression carried by a call [`Arg`], discarding the (irrelevant-here)
+/// name of a named argument. Both static passes recurse into the same sub-expr
+/// regardless of whether the argument was positional or named.
+fn arg_expr(arg: &Arg) -> &Expr {
+    match arg {
+        Arg::Positional(e) => e,
+        Arg::Named { value, .. } => value,
+    }
+}
+
+/// Apply `f` to each *direct* sub-expression of `e`, in evaluation/source order.
+///
+/// This is a purely **structural**, semantics-free walk: it imposes no per-pass
+/// logic (no exhaustiveness, no null-narrowing) — it only enumerates a node's
+/// immediate child expressions so the two passes can share their recursion for
+/// the cases where they merely descend. Nodes that carry no sub-expressions
+/// (leaves: literals, `Name`, `self`) yield nothing.
+///
+/// Note: it does **not** descend into `Match` arm bodies (those are statements,
+/// which each pass scopes differently), so callers handle `Match` themselves.
+fn walk_child_exprs(e: &Expr, f: &mut impl FnMut(&Expr)) {
+    match &e.kind {
+        ExprKind::Binary { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        ExprKind::Unary { operand, .. } => f(operand),
+        ExprKind::Ternary { then, cond, otherwise } => {
+            f(then);
+            f(cond);
+            f(otherwise);
+        }
+        ExprKind::Call { callee, args } => {
+            f(callee);
+            for a in args {
+                f(arg_expr(a));
+            }
+        }
+        ExprKind::Index { base, index } => {
+            f(base);
+            f(index);
+        }
+        ExprKind::Member { base, .. } => f(base),
+        ExprKind::List(items) => {
+            for it in items {
+                f(it);
+            }
+        }
+        ExprKind::Lambda(l) => f(&l.body),
+        ExprKind::Str(s) => {
+            for part in &s.parts {
+                if let crate::ast::StrSeg::Expr(inner) = part {
+                    f(inner);
+                }
+            }
+        }
+        ExprKind::Map(pairs) => {
+            for (k, v) in pairs {
+                f(k);
+                f(v);
+            }
+        }
+        ExprKind::Set(items) | ExprKind::Tuple(items) => {
+            for it in items {
+                f(it);
+            }
+        }
+        ExprKind::Comprehension(c) => {
+            use crate::ast::ComprehensionOutput::*;
+            match &c.output {
+                List(out) | Set(out) => f(out),
+                Map { key, value } => {
+                    f(key);
+                    f(value);
+                }
+            }
+            f(&c.iter);
+            if let Some(cond) = &c.cond {
+                f(cond);
+            }
+        }
+        // `Match` is intentionally not descended here (see doc comment), and the
+        // remaining leaves carry no sub-expressions.
+        ExprKind::Match(_)
+        | ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Null
+        | ExprKind::Name(_)
+        | ExprKind::SelfExpr => {}
     }
 }
 
