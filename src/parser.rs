@@ -232,11 +232,22 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             TokenKind::Eof | TokenKind::Dedent => Ok(()),
+            // The statement's expression ended with a block that consumed its own
+            // terminating `Dedent` — e.g. a block-form `match` used as a binding /
+            // `return` / expression RHS (`label = match x: …`). The block already
+            // terminated the statement, so no separate `Newline` precedes the next
+            // sibling statement; accept without consuming a token.
+            _ if matches!(self.prev_kind(), Some(TokenKind::Dedent)) => Ok(()),
             other => Err(Diagnostic::parse(
                 format!("expected end of line, found {}", describe(other)),
                 self.cur_span(),
             )),
         }
+    }
+
+    /// The kind of the most-recently-consumed token, if any.
+    fn prev_kind(&self) -> Option<&TokenKind> {
+        self.pos.checked_sub(1).and_then(|i| self.tokens.get(i)).map(|t| &t.kind)
     }
 
     /// `simple_stmt = binding | assignment | return | break | continue | expr`.
