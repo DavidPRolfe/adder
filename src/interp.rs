@@ -52,6 +52,7 @@
 //! - **Show** — `Float` always renders with a decimal point (`9.0`, not `9`).
 
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -1330,11 +1331,15 @@ impl Interp {
     /// home for the eager iterator pipeline (`map`/`filter`/`fold`/…) and the
     /// `Map`/`Set` methods (`get`/`insert`/`keys`/…).
     ///
-    /// Stage 0 ships this as a stub: every call is a runtime error so the shape
-    /// exists and `call_method` can route to it without colliding with the
-    /// Struct/Enum path. Wave 1-A replaces the body with the real dispatch.
-    // TODO(W1-A): implement the built-in method table here.
-    #[allow(unused_variables)]
+    /// Dispatch is eager: transforming stages return a fresh `Value::List`,
+    /// terminal stages return scalars. Args are evaluated here (named arguments
+    /// are rejected — built-in methods take positional args only). Higher-order
+    /// methods (`map`/`filter`/…) receive a callable `Value` (a `Closure` or
+    /// `Builtin`) and invoke it per element through [`Self::apply`], the same
+    /// path an ordinary call uses (so wrong-arity is the usual runtime error).
+    ///
+    /// Ranges (`0..n`) are already materialized to `Value::List` by
+    /// [`Self::eval`], so the `List` arm covers them for free.
     fn call_builtin_method(
         &mut self,
         recv: Value,
@@ -1343,13 +1348,400 @@ impl Interp {
         span: Span,
         env: &Env,
     ) -> EvalResult {
-        Err(Diagnostic::runtime(
-            format!(
-                "built-in method `.{}` is not yet implemented (M2 Wave 1)",
-                name
-            ),
-            span,
-        ))
+        // Built-in methods take positional args only; reject named ones with a
+        // clear message before we touch the receiver.
+        let arg_vals = self.eval_builtin_args(name, args, span, env)?;
+
+        match &recv {
+            Value::List(items) => self.list_method(items, name, arg_vals, span),
+            Value::Map(pairs) => self.map_method(pairs, name, arg_vals, span),
+            Value::Set(items) => self.set_method(items, name, arg_vals, span),
+            Value::Str(s) => Self::str_method(s, name, &arg_vals, span),
+            other => Err(Diagnostic::runtime(
+                format!("type `{}` has no method `{}`", type_name(other), name),
+                span,
+            )),
+        }
+    }
+
+    /// Evaluate built-in-method arguments, rejecting *named* arguments (which
+    /// are only meaningful in struct/enum construction).
+    fn eval_builtin_args(
+        &mut self,
+        name: &str,
+        args: &[Arg],
+        span: Span,
+        env: &Env,
+    ) -> Result<Vec<Value>, Diagnostic> {
+        let mut vals = Vec::with_capacity(args.len());
+        for a in args {
+            match a {
+                Arg::Positional(e) => vals.push(self.eval(e, env)?),
+                Arg::Named { name: arg, .. } => {
+                    return Err(Diagnostic::runtime(
+                        format!(
+                            "built-in method `.{}` takes positional arguments only; \
+                             named argument `{}` is not allowed",
+                            name, arg
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+        Ok(vals)
+    }
+
+    // ---- List methods (also cover ranges, which are lists) ----------------
+
+    /// Dispatch a built-in `List` method. Transforms return a fresh
+    /// `Value::List`; terminals return scalars or `T?`.
+    fn list_method(
+        &mut self,
+        items: &Rc<RefCell<Vec<Value>>>,
+        name: &str,
+        args: Vec<Value>,
+        span: Span,
+    ) -> EvalResult {
+        match name {
+            // -- transforms: map / filter ----------------------------------
+            "map" => {
+                let f = arg1(name, args, span)?;
+                let src = items.borrow().clone();
+                let mut out = Vec::with_capacity(src.len());
+                for v in src {
+                    out.push(self.apply(f.clone(), vec![v], span)?);
+                }
+                Ok(list_value(out))
+            }
+            "filter" => {
+                let p = arg1(name, args, span)?;
+                let src = items.borrow().clone();
+                let mut out = Vec::new();
+                for v in src {
+                    if self.apply_predicate(&p, v.clone(), span)? {
+                        out.push(v);
+                    }
+                }
+                Ok(list_value(out))
+            }
+            // -- terminals: fold / reduce ----------------------------------
+            "fold" => {
+                let (init, f) = arg2(name, args, span)?;
+                let src = items.borrow().clone();
+                let mut acc = init;
+                for v in src {
+                    acc = self.apply(f.clone(), vec![acc, v], span)?;
+                }
+                Ok(acc)
+            }
+            "reduce" => {
+                let f = arg1(name, args, span)?;
+                let src = items.borrow().clone();
+                let mut iter = src.into_iter();
+                let mut acc = iter.next().ok_or_else(|| {
+                    Diagnostic::runtime(
+                        "`reduce` on an empty list has no result".to_string(),
+                        span,
+                    )
+                })?;
+                for v in iter {
+                    acc = self.apply(f.clone(), vec![acc, v], span)?;
+                }
+                Ok(acc)
+            }
+            // -- terminals: numeric / size ---------------------------------
+            "sum" => {
+                arg0(name, &args, span)?;
+                sum_values(&items.borrow(), span)
+            }
+            "count" | "len" => {
+                arg0(name, &args, span)?;
+                Ok(Value::Int(BigInt::from(items.borrow().len())))
+            }
+            "is_empty" => {
+                arg0(name, &args, span)?;
+                Ok(Value::Bool(items.borrow().is_empty()))
+            }
+            // -- terminals: predicates -------------------------------------
+            "any" => {
+                let p = arg1(name, args, span)?;
+                let src = items.borrow().clone();
+                for v in src {
+                    if self.apply_predicate(&p, v, span)? {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                Ok(Value::Bool(false))
+            }
+            "all" => {
+                let p = arg1(name, args, span)?;
+                let src = items.borrow().clone();
+                for v in src {
+                    if !self.apply_predicate(&p, v, span)? {
+                        return Ok(Value::Bool(false));
+                    }
+                }
+                Ok(Value::Bool(true))
+            }
+            "find" => {
+                let p = arg1(name, args, span)?;
+                let src = items.borrow().clone();
+                for v in src {
+                    if self.apply_predicate(&p, v.clone(), span)? {
+                        return Ok(v);
+                    }
+                }
+                Ok(Value::Null)
+            }
+            "contains" => {
+                let x = arg1(name, args, span)?;
+                let found = items.borrow().iter().any(|v| values_equal(v, &x));
+                Ok(Value::Bool(found))
+            }
+            // -- terminals: positional -------------------------------------
+            "first" => {
+                arg0(name, &args, span)?;
+                Ok(items.borrow().first().cloned().unwrap_or(Value::Null))
+            }
+            "last" => {
+                arg0(name, &args, span)?;
+                Ok(items.borrow().last().cloned().unwrap_or(Value::Null))
+            }
+            "min" => {
+                arg0(name, &args, span)?;
+                extreme(&items.borrow(), Ordering::Less, span)
+            }
+            "max" => {
+                arg0(name, &args, span)?;
+                extreme(&items.borrow(), Ordering::Greater, span)
+            }
+            // -- transforms: slicing ---------------------------------------
+            "take" => {
+                let n = arg1(name, args, span)?;
+                let n = as_count(&n, "take", span)?;
+                let out: Vec<Value> = items.borrow().iter().take(n).cloned().collect();
+                Ok(list_value(out))
+            }
+            "skip" => {
+                let n = arg1(name, args, span)?;
+                let n = as_count(&n, "skip", span)?;
+                let out: Vec<Value> = items.borrow().iter().skip(n).cloned().collect();
+                Ok(list_value(out))
+            }
+            // -- transforms: structural ------------------------------------
+            "enumerate" => {
+                arg0(name, &args, span)?;
+                let out: Vec<Value> = items
+                    .borrow()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        Value::Tuple(Rc::new(vec![Value::Int(BigInt::from(i)), v.clone()]))
+                    })
+                    .collect();
+                Ok(list_value(out))
+            }
+            "zip" => {
+                let other = arg1(name, args, span)?;
+                let other = as_list(&other, "zip", span)?;
+                let out: Vec<Value> = items
+                    .borrow()
+                    .iter()
+                    .zip(other.borrow().iter())
+                    .map(|(a, b)| Value::Tuple(Rc::new(vec![a.clone(), b.clone()])))
+                    .collect();
+                Ok(list_value(out))
+            }
+            "reverse" => {
+                arg0(name, &args, span)?;
+                let mut out = items.borrow().clone();
+                out.reverse();
+                Ok(list_value(out))
+            }
+            "sorted" => {
+                arg0(name, &args, span)?;
+                let mut out = items.borrow().clone();
+                sort_values(&mut out, span)?;
+                Ok(list_value(out))
+            }
+            // `collect` is the eager identity — the pipeline already produced a
+            // concrete list. It returns a fresh list (a copy) for parity with
+            // the lazy spelling where `collect` forces materialization.
+            "collect" => {
+                arg0(name, &args, span)?;
+                Ok(list_value(items.borrow().clone()))
+            }
+            // -- in-place mutation -----------------------------------------
+            "append" => {
+                let x = arg1(name, args, span)?;
+                items.borrow_mut().push(x);
+                Ok(Value::Unit)
+            }
+            "pop_last" => {
+                arg0(name, &args, span)?;
+                Ok(items.borrow_mut().pop().unwrap_or(Value::Null))
+            }
+            _ => Err(Diagnostic::runtime(
+                format!("`List` has no method `{}`", name),
+                span,
+            )),
+        }
+    }
+
+    // ---- Map methods -------------------------------------------------------
+
+    /// Dispatch a built-in `Map` method. Insertion-ordered `Vec` of pairs;
+    /// lookups and key overwrites use structural equality via linear scan.
+    fn map_method(
+        &mut self,
+        pairs: &Rc<RefCell<Vec<(Value, Value)>>>,
+        name: &str,
+        args: Vec<Value>,
+        span: Span,
+    ) -> EvalResult {
+        match name {
+            "get" => {
+                let k = arg1(name, args, span)?;
+                let found = pairs
+                    .borrow()
+                    .iter()
+                    .find(|(key, _)| values_equal(key, &k))
+                    .map(|(_, v)| v.clone());
+                Ok(found.unwrap_or(Value::Null))
+            }
+            "insert" => {
+                let (k, v) = arg2(name, args, span)?;
+                let mut map = pairs.borrow_mut();
+                if let Some(slot) = map.iter_mut().find(|(key, _)| values_equal(key, &k)) {
+                    slot.1 = v; // overwrite existing key, preserving its position
+                } else {
+                    map.push((k, v));
+                }
+                Ok(Value::Unit)
+            }
+            "contains" | "has" => {
+                let k = arg1(name, args, span)?;
+                let found = pairs.borrow().iter().any(|(key, _)| values_equal(key, &k));
+                Ok(Value::Bool(found))
+            }
+            "keys" => {
+                arg0(name, &args, span)?;
+                let out: Vec<Value> = pairs.borrow().iter().map(|(k, _)| k.clone()).collect();
+                Ok(list_value(out))
+            }
+            "values" => {
+                arg0(name, &args, span)?;
+                let out: Vec<Value> = pairs.borrow().iter().map(|(_, v)| v.clone()).collect();
+                Ok(list_value(out))
+            }
+            "items" => {
+                arg0(name, &args, span)?;
+                let out: Vec<Value> = pairs
+                    .borrow()
+                    .iter()
+                    .map(|(k, v)| Value::Tuple(Rc::new(vec![k.clone(), v.clone()])))
+                    .collect();
+                Ok(list_value(out))
+            }
+            "len" => {
+                arg0(name, &args, span)?;
+                Ok(Value::Int(BigInt::from(pairs.borrow().len())))
+            }
+            _ => Err(Diagnostic::runtime(
+                format!("`Map` has no method `{}`", name),
+                span,
+            )),
+        }
+    }
+
+    // ---- Set methods -------------------------------------------------------
+
+    /// Dispatch a built-in `Set` method. Insertion-ordered `Vec`, deduplicated
+    /// by structural equality via linear scan.
+    fn set_method(
+        &mut self,
+        items: &Rc<RefCell<Vec<Value>>>,
+        name: &str,
+        args: Vec<Value>,
+        span: Span,
+    ) -> EvalResult {
+        match name {
+            "insert" => {
+                let x = arg1(name, args, span)?;
+                let mut set = items.borrow_mut();
+                if !set.iter().any(|v| values_equal(v, &x)) {
+                    set.push(x);
+                }
+                Ok(Value::Unit)
+            }
+            "contains" => {
+                let x = arg1(name, args, span)?;
+                let found = items.borrow().iter().any(|v| values_equal(v, &x));
+                Ok(Value::Bool(found))
+            }
+            "union" => {
+                let other = arg1(name, args, span)?;
+                let other = as_set(&other, "union", span)?;
+                let mut out = items.borrow().clone();
+                for v in other.borrow().iter() {
+                    if !out.iter().any(|u| values_equal(u, v)) {
+                        out.push(v.clone());
+                    }
+                }
+                Ok(set_value(out))
+            }
+            "intersect" => {
+                let other = arg1(name, args, span)?;
+                let other = as_set(&other, "intersect", span)?;
+                let rhs = other.borrow();
+                let out: Vec<Value> = items
+                    .borrow()
+                    .iter()
+                    .filter(|v| rhs.iter().any(|u| values_equal(u, v)))
+                    .cloned()
+                    .collect();
+                Ok(set_value(out))
+            }
+            "len" => {
+                arg0(name, &args, span)?;
+                Ok(Value::Int(BigInt::from(items.borrow().len())))
+            }
+            _ => Err(Diagnostic::runtime(
+                format!("`Set` has no method `{}`", name),
+                span,
+            )),
+        }
+    }
+
+    // ---- String methods (minimal) -----------------------------------------
+
+    /// Dispatch a built-in `String` method. Minimal in M2 Wave 1: `len()`.
+    fn str_method(s: &str, name: &str, args: &[Value], span: Span) -> EvalResult {
+        match name {
+            "len" => {
+                arg0(name, args, span)?;
+                // Length in Unicode scalar values (chars), not bytes.
+                Ok(Value::Int(BigInt::from(s.chars().count())))
+            }
+            _ => Err(Diagnostic::runtime(
+                format!("`String` has no method `{}`", name),
+                span,
+            )),
+        }
+    }
+
+    /// Invoke a predicate callable and require a `Bool` result (used by
+    /// `filter`/`any`/`all`/`find`). A non-`Bool` result is a runtime error —
+    /// no truthiness, matching the language's condition rules.
+    fn apply_predicate(&mut self, p: &Value, v: Value, span: Span) -> Result<bool, Diagnostic> {
+        match self.apply(p.clone(), vec![v], span)? {
+            Value::Bool(b) => Ok(b),
+            other => Err(Diagnostic::runtime(
+                format!("predicate must return Bool, found {}", type_name(&other)),
+                span,
+            )),
+        }
     }
 
     fn construct_struct(
@@ -1649,6 +2041,204 @@ fn root_of(env: &Env) -> Env {
     }
 }
 
+// ---- Built-in-method argument arity (M2 Wave 1-A) ------------------------
+
+/// Require a built-in method to receive **no** arguments.
+fn arg0(name: &str, args: &[Value], span: Span) -> Result<(), Diagnostic> {
+    if args.is_empty() {
+        Ok(())
+    } else {
+        Err(Diagnostic::runtime(
+            format!("`{}` takes no arguments, got {}", name, args.len()),
+            span,
+        ))
+    }
+}
+
+/// Require **exactly one** argument, returning it by value.
+fn arg1(name: &str, args: Vec<Value>, span: Span) -> Result<Value, Diagnostic> {
+    if args.len() != 1 {
+        return Err(Diagnostic::runtime(
+            format!("`{}` takes exactly one argument, got {}", name, args.len()),
+            span,
+        ));
+    }
+    Ok(args.into_iter().next().unwrap())
+}
+
+/// Require **exactly two** arguments, returning them in order.
+fn arg2(name: &str, args: Vec<Value>, span: Span) -> Result<(Value, Value), Diagnostic> {
+    if args.len() != 2 {
+        return Err(Diagnostic::runtime(
+            format!("`{}` takes exactly two arguments, got {}", name, args.len()),
+            span,
+        ));
+    }
+    let mut it = args.into_iter();
+    Ok((it.next().unwrap(), it.next().unwrap()))
+}
+
+// ---- Built-in-method value constructors / coercions ---------------------
+
+/// Wrap a `Vec<Value>` as a fresh, reference-shared `Value::List`.
+fn list_value(items: Vec<Value>) -> Value {
+    Value::List(Rc::new(RefCell::new(items)))
+}
+
+/// Wrap a `Vec<Value>` as a fresh, reference-shared `Value::Set` (caller must
+/// have already deduplicated).
+fn set_value(items: Vec<Value>) -> Value {
+    Value::Set(Rc::new(RefCell::new(items)))
+}
+
+/// Require a `List` receiver-arg, returning its shared store.
+fn as_list<'a>(
+    v: &'a Value,
+    method: &str,
+    span: Span,
+) -> Result<&'a Rc<RefCell<Vec<Value>>>, Diagnostic> {
+    match v {
+        Value::List(items) => Ok(items),
+        other => Err(Diagnostic::runtime(
+            format!("`{}` expects a List argument, found {}", method, type_name(other)),
+            span,
+        )),
+    }
+}
+
+/// Require a `Set` receiver-arg, returning its shared store.
+fn as_set<'a>(
+    v: &'a Value,
+    method: &str,
+    span: Span,
+) -> Result<&'a Rc<RefCell<Vec<Value>>>, Diagnostic> {
+    match v {
+        Value::Set(items) => Ok(items),
+        other => Err(Diagnostic::runtime(
+            format!("`{}` expects a Set argument, found {}", method, type_name(other)),
+            span,
+        )),
+    }
+}
+
+/// Coerce an `Int` count argument (e.g. for `take`/`skip`) to a `usize`. A
+/// negative count is treated as zero (take/skip nothing).
+fn as_count(v: &Value, method: &str, span: Span) -> Result<usize, Diagnostic> {
+    match v {
+        Value::Int(n) => Ok(n.to_usize().unwrap_or(if n.is_negative() { 0 } else { usize::MAX })),
+        other => Err(Diagnostic::runtime(
+            format!("`{}` expects an Int count, found {}", method, type_name(other)),
+            span,
+        )),
+    }
+}
+
+// ---- Built-in-method numeric / ordering ---------------------------------
+
+/// Sum a list of values. Empty sum is `Int(0)`; an all-`Float` (or mixed-empty)
+/// list sums as `Float`. Mixing numeric kinds or summing a non-number is a
+/// runtime error (no implicit Int/Float coercion).
+fn sum_values(items: &[Value], span: Span) -> EvalResult {
+    if items.is_empty() {
+        return Ok(Value::Int(BigInt::from(0)));
+    }
+    match &items[0] {
+        Value::Int(_) => {
+            let mut acc = BigInt::from(0);
+            for v in items {
+                match v {
+                    Value::Int(n) => acc += n,
+                    other => {
+                        return Err(Diagnostic::runtime(
+                            format!("`sum` cannot add {} to an Int total", type_name(other)),
+                            span,
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Int(acc))
+        }
+        Value::Float(_) => {
+            let mut acc = 0.0_f64;
+            for v in items {
+                match v {
+                    Value::Float(f) => acc += f,
+                    other => {
+                        return Err(Diagnostic::runtime(
+                            format!("`sum` cannot add {} to a Float total", type_name(other)),
+                            span,
+                        ));
+                    }
+                }
+            }
+            Ok(Value::Float(acc))
+        }
+        other => Err(Diagnostic::runtime(
+            format!("`sum` requires numbers, found {}", type_name(other)),
+            span,
+        )),
+    }
+}
+
+/// Pick the extreme element by structural ordering: `Ordering::Less` for `min`,
+/// `Ordering::Greater` for `max`. Errors on an empty list or incomparable
+/// elements.
+fn extreme(items: &[Value], want: Ordering, span: Span) -> EvalResult {
+    let mut iter = items.iter();
+    let label = if want == Ordering::Less { "min" } else { "max" };
+    let mut best = iter
+        .next()
+        .ok_or_else(|| {
+            Diagnostic::runtime(format!("`{}` on an empty list has no result", label), span)
+        })?
+        .clone();
+    for v in iter {
+        if compare_values(v, &best, span)? == want {
+            best = v.clone();
+        }
+    }
+    Ok(best)
+}
+
+/// Sort a slice of values ascending by structural ordering, surfacing the first
+/// incomparable pair as a runtime error.
+fn sort_values(items: &mut [Value], span: Span) -> Result<(), Diagnostic> {
+    // `sort_by` can't carry a `Result`, so capture the first error out-of-band.
+    let mut err: Option<Diagnostic> = None;
+    items.sort_by(|a, b| match compare_values(a, b, span) {
+        Ok(ord) => ord,
+        Err(d) => {
+            if err.is_none() {
+                err = Some(d);
+            }
+            Ordering::Equal
+        }
+    });
+    match err {
+        Some(d) => Err(d),
+        None => Ok(()),
+    }
+}
+
+/// Structural ordering over comparable scalars (`Int`, `Float`, `String`,
+/// `Bool`). Comparison is only defined within a single type; comparing across
+/// types — or comparing a non-scalar (`List`/`Map`/`Set`/struct/…) — is a
+/// runtime error (used by `sorted`/`min`/`max`).
+fn compare_values(a: &Value, b: &Value, span: Span) -> Result<Ordering, Diagnostic> {
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Ok(x.cmp(y)),
+        (Value::Float(x), Value::Float(y)) => x.partial_cmp(y).ok_or_else(|| {
+            Diagnostic::runtime("cannot order NaN Float values".to_string(), span)
+        }),
+        (Value::Str(x), Value::Str(y)) => Ok(x.cmp(y)),
+        (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
+        (x, y) => Err(Diagnostic::runtime(
+            format!("cannot order {} against {}", type_name(x), type_name(y)),
+            span,
+        )),
+    }
+}
+
 /// Coerce a value to a Bool for `and`/`or`, erroring otherwise.
 fn as_bool(v: &Value, span: Span, op: &str) -> Result<bool, Diagnostic> {
     match v {
@@ -1729,23 +2319,28 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Tuple(x), Value::Tuple(y)) => {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| values_equal(p, q))
         }
-        // TODO(W1-A): Map/Set equality should be order-insensitive (set/dict
-        // semantics). These Values are never produced by M1 programs, so this
-        // placeholder is currently unreachable; W1-A replaces it with the real
-        // structural comparison once map/set literals exist.
+        // Maps are order-insensitive: equal iff every key in `x` is present in
+        // `y` with a structurally-equal value (and the sizes match). Keys are
+        // matched structurally via linear scan — no hashing, consistent with the
+        // `Vec`-backed store.
         (Value::Map(x), Value::Map(y)) => {
             let xs = x.borrow();
             let ys = y.borrow();
             xs.len() == ys.len()
-                && xs.iter().zip(ys.iter()).all(|((kx, vx), (ky, vy))| {
-                    values_equal(kx, ky) && values_equal(vx, vy)
+                && xs.iter().all(|(kx, vx)| {
+                    ys.iter()
+                        .find(|(ky, _)| values_equal(kx, ky))
+                        .map_or(false, |(_, vy)| values_equal(vx, vy))
                 })
         }
+        // Sets are order-insensitive: equal iff same size and every element of
+        // `x` appears in `y` (each side is already deduplicated, so this is a
+        // mutual-containment check).
         (Value::Set(x), Value::Set(y)) => {
             let xs = x.borrow();
             let ys = y.borrow();
             xs.len() == ys.len()
-                && xs.iter().zip(ys.iter()).all(|(p, q)| values_equal(p, q))
+                && xs.iter().all(|p| ys.iter().any(|q| values_equal(p, q)))
         }
         (Value::Struct(x), Value::Struct(y)) => {
             let xi = x.borrow();
@@ -1791,10 +2386,8 @@ fn show(v: &Value) -> String {
             let inner: Vec<String> = items.iter().map(show).collect();
             format!("({})", inner.join(", "))
         }
-        // TODO(W1-A): confirm the exact Map/Set rendering when literals land.
-        // These Values are never produced by M1 programs, so this is currently
-        // unreachable; the rendering here is a sensible default for W1-A to
-        // adopt or refine.
+        // A `Map` renders `{k: v, k2: v2}`; an empty map is `{}` — matching the
+        // surface literal (the empty `{}` is a `Map`).
         Value::Map(pairs) => {
             let inner: Vec<String> = pairs
                 .borrow()
@@ -1803,9 +2396,16 @@ fn show(v: &Value) -> String {
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
+        // A `Set` renders `{a, b}`; the *empty* set renders as `Set()` rather
+        // than `{}` (which is the empty `Map`), matching the surface literal.
         Value::Set(items) => {
-            let inner: Vec<String> = items.borrow().iter().map(show).collect();
-            format!("{{{}}}", inner.join(", "))
+            let items = items.borrow();
+            if items.is_empty() {
+                "Set()".to_string()
+            } else {
+                let inner: Vec<String> = items.iter().map(show).collect();
+                format!("{{{}}}", inner.join(", "))
+            }
         }
         Value::Struct(s) => {
             let inst = s.borrow();
@@ -2769,5 +3369,529 @@ mod tests {
         let r = interp.eval(&div_zero, &root);
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("division by zero"));
+    }
+
+    // =======================================================================
+    // M2 Wave 1-A — built-in method dispatch (List / Map / Set / String)
+    // =======================================================================
+
+    /// Build a `Value::List` from raw `Int`s.
+    fn int_list(ns: &[i64]) -> Value {
+        list_value(ns.iter().map(|&n| Value::Int(BigInt::from(n))).collect())
+    }
+
+    /// Extract the `Int`s out of a `Value::List`, panicking on any other shape.
+    fn list_ints(v: &Value) -> Vec<i64> {
+        match v {
+            Value::List(items) => items
+                .borrow()
+                .iter()
+                .map(|x| match x {
+                    Value::Int(n) => n.to_i64().unwrap(),
+                    other => panic!("expected Int element, got {:?}", other),
+                })
+                .collect(),
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    /// A passable callable `Value` built from a single-param lambda `p -> body`.
+    fn lambda1(interp: &mut Interp, root: &Env, p: &str, body: Expr) -> Value {
+        let lam = ex(ExprKind::Lambda(Lambda {
+            params: vec![p.to_string()],
+            body: Box::new(body),
+        }));
+        interp.eval(&lam, root).unwrap()
+    }
+
+    /// Call a built-in method on `recv` with already-evaluated argument values
+    /// (wrapped as trivial positional arg expressions is unnecessary — we go
+    /// straight through the per-type dispatchers).
+    fn list_call(interp: &mut Interp, recv: &Value, name: &str, args: Vec<Value>) -> Value {
+        let items = match recv {
+            Value::List(items) => items.clone(),
+            other => panic!("list_call on non-list {:?}", other),
+        };
+        interp.list_method(&items, name, args, sp()).unwrap()
+    }
+
+    #[test]
+    fn list_map_filter_sum_pipeline() {
+        let (mut interp, root) = fresh();
+        let xs = int_list(&[1, 2, 3, 4, 5, 6]);
+        // filter(n -> n % 2 == 0)
+        let even = lambda1(
+            &mut interp,
+            &root,
+            "n",
+            bin(BinOp::Eq, bin(BinOp::Rem, name("n"), int(2)), int(0)),
+        );
+        let filtered = list_call(&mut interp, &xs, "filter", vec![even]);
+        assert_eq!(list_ints(&filtered), vec![2, 4, 6]);
+        // map(n -> n * n)
+        let square = lambda1(&mut interp, &root, "n", bin(BinOp::Mul, name("n"), name("n")));
+        let mapped = list_call(&mut interp, &filtered, "map", vec![square]);
+        assert_eq!(list_ints(&mapped), vec![4, 16, 36]);
+        // sum() -> 56
+        match list_call(&mut interp, &mapped, "sum", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(56)),
+            v => panic!("expected Int(56), got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn list_fold_and_reduce() {
+        let (mut interp, root) = fresh();
+        let xs = int_list(&[1, 2, 3, 4]);
+        let add = lambda1_2(&mut interp, &root, "a", "b", bin(BinOp::Add, name("a"), name("b")));
+        match list_call(&mut interp, &xs, "fold", vec![Value::Int(BigInt::from(100)), add.clone()]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(110)),
+            v => panic!("expected Int(110), got {:?}", v),
+        }
+        match list_call(&mut interp, &xs, "reduce", vec![add]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(10)),
+            v => panic!("expected Int(10), got {:?}", v),
+        }
+        // reduce on empty is an error.
+        let empty = int_list(&[]);
+        let add2 = lambda1_2(&mut interp, &root, "a", "b", bin(BinOp::Add, name("a"), name("b")));
+        let items = match &empty {
+            Value::List(i) => i.clone(),
+            _ => unreachable!(),
+        };
+        assert!(interp.list_method(&items, "reduce", vec![add2], sp()).is_err());
+    }
+
+    /// A passable callable from a two-param lambda `(a, b) -> body`.
+    fn lambda1_2(interp: &mut Interp, root: &Env, a: &str, b: &str, body: Expr) -> Value {
+        let lam = ex(ExprKind::Lambda(Lambda {
+            params: vec![a.to_string(), b.to_string()],
+            body: Box::new(body),
+        }));
+        interp.eval(&lam, root).unwrap()
+    }
+
+    #[test]
+    fn list_predicates_and_search() {
+        let (mut interp, root) = fresh();
+        let xs = int_list(&[1, 2, 3, 4, 5]);
+        let gt3 = |interp: &mut Interp, root: &Env| {
+            lambda1(interp, root, "n", bin(BinOp::Gt, name("n"), int(3)))
+        };
+        let p = gt3(&mut interp, &root);
+        assert!(matches!(list_call(&mut interp, &xs, "any", vec![p]), Value::Bool(true)));
+        let p = gt3(&mut interp, &root);
+        assert!(matches!(list_call(&mut interp, &xs, "all", vec![p]), Value::Bool(false)));
+        let p = gt3(&mut interp, &root);
+        match list_call(&mut interp, &xs, "find", vec![p]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(4)),
+            v => panic!("expected Int(4), got {:?}", v),
+        }
+        // find with no match -> Null
+        let none = lambda1(&mut interp, &root, "n", bin(BinOp::Gt, name("n"), int(99)));
+        assert!(matches!(list_call(&mut interp, &xs, "find", vec![none]), Value::Null));
+        // contains
+        assert!(matches!(
+            list_call(&mut interp, &xs, "contains", vec![Value::Int(BigInt::from(3))]),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            list_call(&mut interp, &xs, "contains", vec![Value::Int(BigInt::from(9))]),
+            Value::Bool(false)
+        ));
+        // a non-Bool predicate is a runtime error (no truthiness).
+        let bad = lambda1(&mut interp, &root, "n", name("n"));
+        let items = match &xs {
+            Value::List(i) => i.clone(),
+            _ => unreachable!(),
+        };
+        assert!(interp.list_method(&items, "filter", vec![bad], sp()).is_err());
+    }
+
+    #[test]
+    fn list_size_first_last_min_max() {
+        let (mut interp, _root) = fresh();
+        let xs = int_list(&[3, 1, 4, 1, 5]);
+        match list_call(&mut interp, &xs, "count", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(5)),
+            v => panic!("expected Int, got {:?}", v),
+        }
+        match list_call(&mut interp, &xs, "len", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(5)),
+            v => panic!("expected Int, got {:?}", v),
+        }
+        assert!(matches!(list_call(&mut interp, &xs, "is_empty", vec![]), Value::Bool(false)));
+        match list_call(&mut interp, &xs, "first", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(3)),
+            v => panic!("got {:?}", v),
+        }
+        match list_call(&mut interp, &xs, "last", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(5)),
+            v => panic!("got {:?}", v),
+        }
+        match list_call(&mut interp, &xs, "min", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(1)),
+            v => panic!("got {:?}", v),
+        }
+        match list_call(&mut interp, &xs, "max", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(5)),
+            v => panic!("got {:?}", v),
+        }
+        // first/last on empty -> Null
+        let empty = int_list(&[]);
+        assert!(matches!(list_call(&mut interp, &empty, "first", vec![]), Value::Null));
+        assert!(matches!(list_call(&mut interp, &empty, "last", vec![]), Value::Null));
+        assert!(matches!(list_call(&mut interp, &empty, "is_empty", vec![]), Value::Bool(true)));
+    }
+
+    #[test]
+    fn list_take_skip_reverse_sorted_collect() {
+        let (mut interp, _root) = fresh();
+        let xs = int_list(&[1, 2, 3, 4, 5]);
+        assert_eq!(
+            list_ints(&list_call(&mut interp, &xs, "take", vec![Value::Int(BigInt::from(2))])),
+            vec![1, 2]
+        );
+        assert_eq!(
+            list_ints(&list_call(&mut interp, &xs, "skip", vec![Value::Int(BigInt::from(3))])),
+            vec![4, 5]
+        );
+        // take/skip beyond length, and a negative count clamps to 0.
+        assert_eq!(
+            list_ints(&list_call(&mut interp, &xs, "take", vec![Value::Int(BigInt::from(99))])),
+            vec![1, 2, 3, 4, 5]
+        );
+        assert!(
+            list_ints(&list_call(&mut interp, &xs, "skip", vec![Value::Int(BigInt::from(-1))]))
+                .len()
+                == 5
+        );
+        assert_eq!(
+            list_ints(&list_call(&mut interp, &xs, "reverse", vec![])),
+            vec![5, 4, 3, 2, 1]
+        );
+        let unsorted = int_list(&[3, 1, 4, 1, 5, 9, 2, 6]);
+        assert_eq!(
+            list_ints(&list_call(&mut interp, &unsorted, "sorted", vec![])),
+            vec![1, 1, 2, 3, 4, 5, 6, 9]
+        );
+        assert_eq!(list_ints(&list_call(&mut interp, &xs, "collect", vec![])), vec![1, 2, 3, 4, 5]);
+        // sorted over incomparable (mixed Int/String) is an error.
+        let mixed = list_value(vec![Value::Int(BigInt::from(1)), Value::Str("a".to_string())]);
+        let items = match &mixed {
+            Value::List(i) => i.clone(),
+            _ => unreachable!(),
+        };
+        assert!(interp.list_method(&items, "sorted", vec![], sp()).is_err());
+    }
+
+    #[test]
+    fn list_enumerate_and_zip_make_tuples() {
+        let (mut interp, _root) = fresh();
+        let xs = list_value(vec![Value::Str("a".to_string()), Value::Str("b".to_string())]);
+        let en = list_call(&mut interp, &xs, "enumerate", vec![]);
+        match &en {
+            Value::List(items) => {
+                let items = items.borrow();
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    Value::Tuple(t) => {
+                        assert!(matches!(&t[0], Value::Int(n) if *n == BigInt::from(0)));
+                        assert!(matches!(&t[1], Value::Str(s) if s == "a"));
+                    }
+                    v => panic!("expected tuple, got {:?}", v),
+                }
+            }
+            v => panic!("expected list, got {:?}", v),
+        }
+        // zip pairs up to the shorter length.
+        let ns = int_list(&[10, 20, 30]);
+        let zipped = list_call(&mut interp, &ns, "zip", vec![xs]);
+        match &zipped {
+            Value::List(items) => assert_eq!(items.borrow().len(), 2),
+            v => panic!("expected list, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn list_append_and_pop_last_mutate() {
+        let (mut interp, _root) = fresh();
+        let xs = int_list(&[1, 2]);
+        list_call(&mut interp, &xs, "append", vec![Value::Int(BigInt::from(3))]);
+        assert_eq!(list_ints(&xs), vec![1, 2, 3]); // mutated in place
+        match list_call(&mut interp, &xs, "pop_last", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(3)),
+            v => panic!("got {:?}", v),
+        }
+        assert_eq!(list_ints(&xs), vec![1, 2]);
+        // pop_last on empty -> Null
+        let empty = int_list(&[]);
+        assert!(matches!(list_call(&mut interp, &empty, "pop_last", vec![]), Value::Null));
+    }
+
+    #[test]
+    fn sum_int_float_and_mixed_error() {
+        let (mut interp, _root) = fresh();
+        // empty sum is Int(0)
+        match list_call(&mut interp, &int_list(&[]), "sum", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(0)),
+            v => panic!("got {:?}", v),
+        }
+        let floats = list_value(vec![Value::Float(1.5), Value::Float(2.0)]);
+        match list_call(&mut interp, &floats, "sum", vec![]) {
+            Value::Float(f) => assert_eq!(f, 3.5),
+            v => panic!("got {:?}", v),
+        }
+        // mixing Int and Float is a runtime error (no coercion).
+        let mixed = list_value(vec![Value::Int(BigInt::from(1)), Value::Float(2.0)]);
+        let items = match &mixed {
+            Value::List(i) => i.clone(),
+            _ => unreachable!(),
+        };
+        assert!(interp.list_method(&items, "sum", vec![], sp()).is_err());
+    }
+
+    // ---- Map --------------------------------------------------------------
+
+    fn map_value(pairs: Vec<(Value, Value)>) -> Value {
+        Value::Map(Rc::new(RefCell::new(pairs)))
+    }
+
+    fn map_call(interp: &mut Interp, recv: &Value, name: &str, args: Vec<Value>) -> Value {
+        let pairs = match recv {
+            Value::Map(p) => p.clone(),
+            other => panic!("map_call on non-map {:?}", other),
+        };
+        interp.map_method(&pairs, name, args, sp()).unwrap()
+    }
+
+    #[test]
+    fn map_get_insert_contains_len() {
+        let (mut interp, _root) = fresh();
+        let m = map_value(vec![
+            (Value::Str("a".to_string()), Value::Int(BigInt::from(1))),
+            (Value::Str("b".to_string()), Value::Int(BigInt::from(2))),
+        ]);
+        match map_call(&mut interp, &m, "get", vec![Value::Str("a".to_string())]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(1)),
+            v => panic!("got {:?}", v),
+        }
+        // absent key -> Null
+        assert!(matches!(
+            map_call(&mut interp, &m, "get", vec![Value::Str("z".to_string())]),
+            Value::Null
+        ));
+        // has / contains
+        assert!(matches!(
+            map_call(&mut interp, &m, "has", vec![Value::Str("b".to_string())]),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            map_call(&mut interp, &m, "contains", vec![Value::Str("z".to_string())]),
+            Value::Bool(false)
+        ));
+        // insert new key, then overwrite existing (in place; preserves order)
+        map_call(&mut interp, &m, "insert", vec![Value::Str("c".to_string()), Value::Int(BigInt::from(3))]);
+        map_call(&mut interp, &m, "insert", vec![Value::Str("a".to_string()), Value::Int(BigInt::from(9))]);
+        match map_call(&mut interp, &m, "get", vec![Value::Str("a".to_string())]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(9)),
+            v => panic!("got {:?}", v),
+        }
+        match map_call(&mut interp, &m, "len", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(3)),
+            v => panic!("got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn map_keys_values_items() {
+        let (mut interp, _root) = fresh();
+        let m = map_value(vec![
+            (Value::Str("a".to_string()), Value::Int(BigInt::from(1))),
+            (Value::Str("b".to_string()), Value::Int(BigInt::from(2))),
+        ]);
+        // keys() preserves insertion order
+        match map_call(&mut interp, &m, "keys", vec![]) {
+            Value::List(items) => {
+                let ks: Vec<String> = items
+                    .borrow()
+                    .iter()
+                    .map(|k| match k {
+                        Value::Str(s) => s.clone(),
+                        v => panic!("got {:?}", v),
+                    })
+                    .collect();
+                assert_eq!(ks, vec!["a", "b"]);
+            }
+            v => panic!("got {:?}", v),
+        }
+        assert_eq!(list_ints(&map_call(&mut interp, &m, "values", vec![])), vec![1, 2]);
+        // items() yields 2-tuples
+        match map_call(&mut interp, &m, "items", vec![]) {
+            Value::List(items) => {
+                let items = items.borrow();
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    Value::Tuple(t) => {
+                        assert_eq!(t.len(), 2);
+                        assert!(matches!(&t[0], Value::Str(s) if s == "a"));
+                        assert!(matches!(&t[1], Value::Int(n) if *n == BigInt::from(1)));
+                    }
+                    v => panic!("got {:?}", v),
+                }
+            }
+            v => panic!("got {:?}", v),
+        }
+    }
+
+    // ---- Set --------------------------------------------------------------
+
+    fn set_call(interp: &mut Interp, recv: &Value, name: &str, args: Vec<Value>) -> Value {
+        let items = match recv {
+            Value::Set(i) => i.clone(),
+            other => panic!("set_call on non-set {:?}", other),
+        };
+        interp.set_method(&items, name, args, sp()).unwrap()
+    }
+
+    fn set_of(ns: &[i64]) -> Value {
+        set_value(ns.iter().map(|&n| Value::Int(BigInt::from(n))).collect())
+    }
+
+    #[test]
+    fn set_insert_dedup_contains_len() {
+        let (mut interp, _root) = fresh();
+        let s = set_of(&[1, 2]);
+        set_call(&mut interp, &s, "insert", vec![Value::Int(BigInt::from(2))]); // dup, no-op
+        set_call(&mut interp, &s, "insert", vec![Value::Int(BigInt::from(3))]);
+        match set_call(&mut interp, &s, "len", vec![]) {
+            Value::Int(n) => assert_eq!(n, BigInt::from(3)),
+            v => panic!("got {:?}", v),
+        }
+        assert!(matches!(
+            set_call(&mut interp, &s, "contains", vec![Value::Int(BigInt::from(3))]),
+            Value::Bool(true)
+        ));
+        assert!(matches!(
+            set_call(&mut interp, &s, "contains", vec![Value::Int(BigInt::from(9))]),
+            Value::Bool(false)
+        ));
+    }
+
+    #[test]
+    fn set_union_and_intersect() {
+        let (mut interp, _root) = fresh();
+        let a = set_of(&[1, 2, 3]);
+        let b = set_of(&[2, 3, 4]);
+        let u = set_call(&mut interp, &a, "union", vec![b.clone()]);
+        // union keeps insertion order of `a` then new elements of `b`
+        match &u {
+            Value::Set(items) => {
+                let got: Vec<i64> = items
+                    .borrow()
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n.to_i64().unwrap(),
+                        x => panic!("got {:?}", x),
+                    })
+                    .collect();
+                assert_eq!(got, vec![1, 2, 3, 4]);
+            }
+            v => panic!("got {:?}", v),
+        }
+        let i = set_call(&mut interp, &a, "intersect", vec![b]);
+        match &i {
+            Value::Set(items) => {
+                let got: Vec<i64> = items
+                    .borrow()
+                    .iter()
+                    .map(|v| match v {
+                        Value::Int(n) => n.to_i64().unwrap(),
+                        x => panic!("got {:?}", x),
+                    })
+                    .collect();
+                assert_eq!(got, vec![2, 3]);
+            }
+            v => panic!("got {:?}", v),
+        }
+    }
+
+    // ---- String, equality, show, named-arg rejection ----------------------
+
+    #[test]
+    fn string_len() {
+        // counts Unicode scalar values, not bytes (`é` is one char, two bytes).
+        match Interp::str_method("héllo", "len", &[], sp()).unwrap() {
+            Value::Int(n) => assert_eq!(n, BigInt::from(5)),
+            v => panic!("expected Int(5), got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn map_set_equality_is_order_insensitive() {
+        let m1 = map_value(vec![
+            (Value::Str("a".to_string()), Value::Int(BigInt::from(1))),
+            (Value::Str("b".to_string()), Value::Int(BigInt::from(2))),
+        ]);
+        let m2 = map_value(vec![
+            (Value::Str("b".to_string()), Value::Int(BigInt::from(2))),
+            (Value::Str("a".to_string()), Value::Int(BigInt::from(1))),
+        ]);
+        assert!(values_equal(&m1, &m2));
+        // differing value breaks equality
+        let m3 = map_value(vec![
+            (Value::Str("a".to_string()), Value::Int(BigInt::from(1))),
+            (Value::Str("b".to_string()), Value::Int(BigInt::from(9))),
+        ]);
+        assert!(!values_equal(&m1, &m3));
+
+        let s1 = set_of(&[1, 2, 3]);
+        let s2 = set_of(&[3, 2, 1]);
+        assert!(values_equal(&s1, &s2));
+        assert!(!values_equal(&s1, &set_of(&[1, 2])));
+    }
+
+    #[test]
+    fn show_map_and_set() {
+        let m = map_value(vec![
+            (Value::Str("a".to_string()), Value::Int(BigInt::from(1))),
+            (Value::Str("b".to_string()), Value::Int(BigInt::from(2))),
+        ]);
+        assert_eq!(show(&m), "{a: 1, b: 2}");
+        // empty map is `{}`
+        assert_eq!(show(&map_value(vec![])), "{}");
+        // set renders `{a, b}`; empty set renders `Set()`
+        assert_eq!(show(&set_of(&[1, 2])), "{1, 2}");
+        assert_eq!(show(&set_value(vec![])), "Set()");
+    }
+
+    #[test]
+    fn builtin_method_rejects_named_args() {
+        let (mut interp, root) = fresh();
+        // xs.contains(x: 1) — named arg on a built-in method is rejected.
+        let call_expr = ex(ExprKind::Call {
+            callee: Box::new(ex(ExprKind::Member {
+                base: Box::new(ex(ExprKind::List(vec![int(1), int(2)]))),
+                name: "contains".to_string(),
+                safe: false,
+            })),
+            args: vec![Arg::Named { name: "x".to_string(), value: int(1) }],
+        });
+        let r = interp.eval(&call_expr, &root);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().message.contains("positional"));
+    }
+
+    #[test]
+    fn unknown_builtin_method_errors() {
+        let (mut interp, _root) = fresh();
+        let xs = int_list(&[1, 2, 3]);
+        let items = match &xs {
+            Value::List(i) => i.clone(),
+            _ => unreachable!(),
+        };
+        let r = interp.list_method(&items, "no_such_method", vec![], sp());
+        assert!(r.is_err());
+        assert!(r.unwrap_err().message.contains("no method"));
     }
 }
