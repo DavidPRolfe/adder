@@ -550,7 +550,7 @@ impl<'a> Lexer<'a> {
                 Some('\n') => {
                     let span = self.span_at(start, self.pos, line, col);
                     return Err(Diagnostic::lex(
-                        "unterminated string literal (M1 strings are single-line)",
+                        "unterminated string literal (Adder strings are single-line)",
                         span,
                     ));
                 }
@@ -674,7 +674,7 @@ impl<'a> Lexer<'a> {
                 Some('\n') => {
                     let span = self.span_at(str_start, self.pos, str_line, str_col);
                     return Err(Diagnostic::lex(
-                        "unterminated interpolation (M1 strings are single-line)",
+                        "unterminated interpolation (Adder strings are single-line)",
                         span,
                     ));
                 }
@@ -759,7 +759,7 @@ impl<'a> Lexer<'a> {
         let c1 = self.peek_n(1);
         let c2 = self.peek_n(2);
 
-        // Helper closures advance by N chars then push a token.
+        // Helper macro: advance by N chars then push a token.
         macro_rules! emit {
             ($n:expr, $kind:expr) => {{
                 for _ in 0..$n {
@@ -885,7 +885,7 @@ fn is_id_continue(c: char) -> bool {
 
 /// Map a reserved keyword to its `TokenKind`, or `None` for a plain `Name`.
 ///
-/// Reserved-but-unused-in-M1 words (`trait import from as to try Self`) have no
+/// Reserved-but-unused words (`trait import from as to try Self`) have no
 /// `TokenKind`, so they fall through to `Name` here (grammar §1.3). `print` and
 /// `panic` are intentionally not keywords. `returns` was dropped as a keyword in
 /// M2 (function results now use `->`), so it too lexes as a plain `Name`.

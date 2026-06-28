@@ -6,8 +6,8 @@ while borrowing the *expressive* parts of Rust's type system (algebraic data
 types, exhaustive pattern matching, nullable types) and leaving behind the parts
 that fight the programmer (lifetimes, borrowing, ownership). You write types at
 the edges — on function signatures — and they are checked underneath. This repo
-is the Milestone 1 interpreter: a tree-walking interpreter written in Rust. The
-full language vision lives in [`spec/`](spec/).
+is the interpreter (Milestones 1 and 2 merged): a tree-walking interpreter
+written in Rust. The full language vision lives in [`spec/`](spec/).
 
 > The name nods to its inspirations: a smaller, friendlier cousin of the
 > **Python**, with some of the **Rust** in its scales.
@@ -65,11 +65,14 @@ variants), and [`examples/narrowed.adr`](examples/narrowed.adr) (null narrowing)
 The [`examples/errors/`](examples/errors/) directory holds programs that are
 *supposed* to be rejected — useful for seeing the diagnostics.
 
-## Language tour (Milestone 1)
+## Language tour
 
-This reflects the current M1 surface syntax. The authority is
+This covers the core surface syntax. The authority is
 [`spec/03-mvp-grammar.md`](spec/03-mvp-grammar.md); the scope (what's in vs.
-deferred) is [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md).
+deferred) is [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md). The M2 additions
+(pipelines, comprehensions, tuples, Map/Set, match guards, `?.`) are covered in
+[`spec/04-m2-scope.md`](spec/04-m2-scope.md) and
+[`spec/05-m2-grammar.md`](spec/05-m2-grammar.md).
 
 **Functions** have fully annotated signatures (parameter types plus an `->` result
 clause; omit the `->` for no result). The body returns its final expression
@@ -146,7 +149,7 @@ fn add_one(x: Int?) -> Int:
     return 0
 ```
 
-**Other M1 facts to know:**
+**Other facts to know:**
 
 - No truthiness — conditions in `if` / `elif` / `while` / ternary must be `Bool`.
 - No implicit `Int`/`Float` coercion; `Int` is arbitrary precision (no overflow).
@@ -160,8 +163,8 @@ fn add_one(x: Int?) -> Int:
 
 ## Project status
 
-Milestone 1 — a **typed-lite tree-walker**. Rather than a full type checker, M1
-runs exactly two static checks before execution:
+Milestones 1 and 2 merged — a **typed-lite tree-walker**. Rather than a full type
+checker, it runs exactly two static checks before execution:
 
 1. **Match exhaustiveness** — a `match` over an enum must cover every variant (or
    use `_`).
@@ -170,15 +173,16 @@ runs exactly two static checks before execution:
 
 Everything else (e.g. `val`-immutability and the Bool-condition rule) is enforced
 at runtime for now. This is a pre-1.0 interpreter and the language will change.
-See [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md) for the full in-scope /
-deferred breakdown — traits, generics, `Result`/`try`, lambdas/closures, iterator
-pipelines, comprehensions, modules, and more are deferred to later milestones.
+See [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md) and
+[`spec/04-m2-scope.md`](spec/04-m2-scope.md) for the full in-scope / deferred
+breakdown — traits, generics, `Result`/`try`, modules, and full inference are
+deferred to later milestones (M3+).
 
 ## Project layout
 
 ```
 spec/        Language spec: design principles (00), language reference (01),
-             MVP scope (02), M1 grammar (03)
+             MVP scope (02), M1 grammar (03), M2 scope (04), M2 grammar (05)
 src/         The interpreter, one file per pipeline stage:
   token.rs     lexer<->parser contract (tokens, spans, string parts)
   ast.rs       parser<->checks<->interp contract (the syntax tree)
@@ -192,5 +196,7 @@ src/         The interpreter, one file per pipeline stage:
 examples/    Runnable `.adr` programs (errors/ holds ones meant to be rejected;
              features/ covers individual language features)
 tests/       acceptance.rs (M1 definition-of-done), features.rs (per-feature
-             coverage), program_ledger.rs (the ledger example)
+             coverage), program_ledger.rs (the ledger example), and the M2
+             suites: m2_collections.rs, m2_nullable.rs, m2_patterns.rs,
+             m2_pipelines.rs, m2_sets_maps.rs, m2_showcase.rs
 ```

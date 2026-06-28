@@ -1,6 +1,6 @@
-//! # Adder — a tree-walking interpreter (Milestone 1)
+//! # Adder — a tree-walking interpreter
 //!
-//! Adder is a Python-readable, Rust-expressive language. This crate is the M1
+//! Adder is a Python-readable, Rust-expressive language. This crate is the Adder
 //! interpreter: a tree-walker plus exactly two static checks. See the specs in
 //! `spec/` (especially `03-mvp-grammar.md`, the authority for surface syntax).
 //!

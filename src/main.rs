@@ -117,8 +117,6 @@ fn print_doc(kind: &str, name: &str, doc: &Option<String>) {
 }
 
 /// Drive all four stages, normalizing each stage's error shape into a
-
-/// Drive all four stages, normalizing each stage's error shape into a
 /// `Vec<Diagnostic>` so they render uniformly.
 fn run_pipeline(src: &str) -> Result<(), Vec<Diagnostic>> {
     let tokens = adder::lexer::lex(src).map_err(|d| vec![d])?;

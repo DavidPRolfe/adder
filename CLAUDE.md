@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for AI coding sessions on Adder — the Milestone 1 (M1) tree-walking
+Guidance for AI coding sessions on Adder — the tree-walking
 interpreter for a Python-readable, Rust-expressive language. The spec in
 [`spec/`](spec/) is the source of truth; [`spec/03-mvp-grammar.md`](spec/03-mvp-grammar.md)
 is the authority for surface syntax. Don't duplicate the spec here — link to it.
@@ -51,11 +51,14 @@ non-zero on any diagnostic.
   exists.
 
 Do not move runtime rules into `checks.rs` or vice versa — the split is
-deliberate (M1 is "typed-lite", not a full checker).
+deliberate (the project is "typed-lite", not a full checker).
 
-## M1 syntax cheat-sheet (do not regress to older forms)
+## Syntax cheat-sheet (do not regress to older forms)
 
-Verify any new example against `examples/` and `spec/03-mvp-grammar.md`.
+Verify any new example against `examples/` and `spec/03-mvp-grammar.md`. The M2
+surface syntax (pipelines, comprehensions, tuples, Map/Set, match guards, `?.`)
+is documented in [`spec/04-m2-scope.md`](spec/04-m2-scope.md) and
+[`spec/05-m2-grammar.md`](spec/05-m2-grammar.md).
 
 - **Files** use the `.adr` extension.
 - **Functions**: fully annotated — `fn f(a: Int) -> Int:`; omit the arrow for unit.
@@ -99,22 +102,15 @@ The M1 **definition of done** lives in these acceptance tests and in
 [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md): the showcase prints `= 9.0`,
 removing a match arm is a compile-time error, an unnarrowed `T?` is a
 compile-time error, and `val` reassignment / non-Bool conditions are rejected.
+The M2 **definition of done** lives in `tests/m2_showcase.rs` /
+`examples/m2_showcase.adr` and [`spec/04-m2-scope.md`](spec/04-m2-scope.md).
 
-## Deferred — NOT in M1 (don't assume these exist)
+## Deferred — NOT yet implemented (M3+)
 
-Per [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md) and `spec/03-mvp-grammar.md`:
+These are not yet built — don't assume they exist:
 
 - Traits / `impl Trait for Type` / `Self` / `derive`
 - Generics + trait bounds (user-declared `[T]`)
-- `Result` / `try` / error propagation (M1 uses `panic`)
-- Lambdas / closures (`x -> expr`) — the tree-walker already evaluates them, but with
-  no function type they can't be passed to a `fn`; deferred to M2 with iterator pipelines
-- Iterator pipelines (`map`/`filter`/`fold`) and comprehensions
+- `Result` / `try` / error propagation (the project uses `panic`)
 - Modules / imports
-- Tuples (`(a, b)` literals/types/patterns; `(expr)` is grouping only)
-- `Map` / `Set` literals
-- Default / named **function** arguments (named args parse only for
-  struct/enum construction)
-- `?.` safe-call and `.expect` (`?` is types-only in M1)
-- Match guards, or-patterns, nested destructuring (patterns are flat)
 - Full type checker + inference (only the two static checks exist)

@@ -1,6 +1,6 @@
 //! The **lexer ↔ parser contract**: tokens and source spans.
 //!
-//! This module is the authority for the *lexical* surface of Adder M1 (grammar
+//! This module is the authority for the *lexical* surface of Adder (grammar
 //! §1). The lexer ([`crate::lexer::lex`]) produces a `Vec<Token>`; the parser
 //! ([`crate::parser::parse`]) consumes it. Both agents build against the types
 //! here, so this file is intended to be **complete** — downstream agents should
@@ -209,9 +209,9 @@ pub enum TokenKind {
     LBrace,      // {
     RBrace,      // }
     Question,    // ?
-    /// `?.` — the safe-call operator (M2). Lexed when `?` is immediately
-    /// followed by `.`. The parser consumes it in M2 Wave 2 (`x?.field`); until
-    /// then it is only produced by the lexer.
+    /// `?.` — the safe-call operator. Lexed when `?` is immediately followed by
+    /// `.`. The lexer produces it and the parser consumes it to build a safe
+    /// member access (`x?.field`).
     QuestionDot, // ?.
 
     // ----- Synthetic layout tokens (§1.2) -----
