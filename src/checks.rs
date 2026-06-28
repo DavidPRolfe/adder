@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
     Arg, BaseType, BinOp, Binder, Binding, EnumDecl, Expr, ExprKind, FnDecl, IfStmt, ImplDecl,
-    MatchExpr, Param, PatternKind, Payload, Program, Stmt, StmtKind, Type,
+    MatchExpr, Param, Pattern, PatternKind, Payload, Program, Stmt, StmtKind, Type,
 };
 use crate::error::Diagnostic;
 use crate::token::Span;
@@ -431,8 +431,11 @@ impl<'a> Exhaustiveness<'a> {
             ResolvedTy::Enum(e) => e,
             ResolvedTy::Unknown => return, // conservative: don't flag.
         };
-        let variants = match self.enums.enums.get(&enum_name) {
-            Some(v) => v,
+        // Clone the variant table so `self` is free for `&mut self` diagnostics
+        // while we walk the arms (the borrow checker treats a method's `self` as
+        // a whole, so we cannot hold a `&self.enums` borrow across `self.diags`).
+        let variants: Vec<(String, usize)> = match self.enums.enums.get(&enum_name) {
+            Some(v) => v.clone(),
             None => return,
         };
 
@@ -441,58 +444,19 @@ impl<'a> Exhaustiveness<'a> {
 
         for arm in &m.arms {
             // A *guarded* arm (`pattern if cond:`) may not fire, so it does not
-            // contribute to exhaustiveness — skip its coverage entirely (M2). The
-            // parser produces `guard: None` until Wave 2, so today this is a
-            // no-op; it is here so guarded arms behave correctly once wired up.
-            // TODO(W2-A): revisit once guards are parsed.
+            // contribute to exhaustiveness — skip its coverage entirely (M2). So
+            // a guard over the last uncovered variant still leaves the match
+            // non-exhaustive; adding `_` (or an unguarded arm) fixes it.
             if arm.guard.is_some() {
                 continue;
             }
-            match &arm.pattern.kind {
-                PatternKind::Wildcard => has_catch_all = true,
-                PatternKind::Binding(_) => has_catch_all = true, // bare NAME matches anything
-                PatternKind::Variant { enum_name: qual, name, subs } => {
-                    // A qualified pattern must name the scrutinee's enum.
-                    if let Some(en) = qual {
-                        if en != &enum_name {
-                            self.diags.push(Diagnostic::check(
-                                format!(
-                                    "pattern matches enum `{}`, but the value is `{}`",
-                                    en, enum_name
-                                ),
-                                arm.pattern.span,
-                            ));
-                            continue;
-                        }
-                    }
-                    // Arity / unknown-variant diagnostics (cheap, best-effort).
-                    if let Some((_, arity)) = variants.iter().find(|(vn, _)| vn == name) {
-                        if *arity != subs.len() {
-                            self.diags.push(Diagnostic::check(
-                                format!(
-                                    "variant `{}::{}` expects {} field(s), but the pattern binds {}",
-                                    enum_name, name, arity, subs.len()
-                                ),
-                                arm.pattern.span,
-                            ));
-                        }
-                        covered.insert(name.as_str());
-                    } else {
-                        self.diags.push(Diagnostic::check(
-                            format!("unknown variant `{}` for enum `{}`", name, enum_name),
-                            arm.pattern.span,
-                        ));
-                    }
-                }
-                // null and literal patterns never cover an enum variant.
-                PatternKind::Null | PatternKind::Literal(_) => {}
-                // Or-patterns and tuple patterns are M2 Wave 2. For now they
-                // contribute no coverage (conservative — they never *over*-claim
-                // exhaustiveness). The parser does not yet produce them.
-                // TODO(W2-A): an or-pattern should count each alternative's
-                // variant toward coverage; a tuple pattern never covers an enum.
-                PatternKind::Or(_) | PatternKind::Tuple(_) => {}
-            }
+            self.cover_pattern(
+                &arm.pattern,
+                &enum_name,
+                &variants,
+                &mut covered,
+                &mut has_catch_all,
+            );
         }
 
         if has_catch_all {
@@ -518,6 +482,75 @@ impl<'a> Exhaustiveness<'a> {
                 ),
                 match_span,
             ));
+        }
+    }
+
+    /// Record the enum-variant coverage of one (sub-)pattern against `variants`,
+    /// emitting any best-effort arity / unknown-variant / wrong-enum diagnostics.
+    ///
+    /// Coverage stays **enum-variant-based** (as in M1): a variant pattern covers
+    /// its variant regardless of how its sub-patterns are shaped — no deep or
+    /// cross-product reasoning. `_` and a bare binding cover everything
+    /// (`has_catch_all`). An **or-pattern** contributes the coverage of *all* its
+    /// alternatives (so `.A or .B` covers both). Tuple / null / literal patterns
+    /// never cover an enum variant. The `'a` lifetime ties inserted names to the
+    /// pattern tree (`m`), so `covered` can borrow them.
+    fn cover_pattern<'p>(
+        &mut self,
+        pat: &'p Pattern,
+        enum_name: &str,
+        variants: &[(String, usize)],
+        covered: &mut HashSet<&'p str>,
+        has_catch_all: &mut bool,
+    ) {
+        match &pat.kind {
+            PatternKind::Wildcard => *has_catch_all = true,
+            PatternKind::Binding(_) => *has_catch_all = true, // bare NAME matches anything
+            PatternKind::Variant { enum_name: qual, name, subs } => {
+                // A qualified pattern must name the scrutinee's enum.
+                if let Some(en) = qual {
+                    if en != enum_name {
+                        self.diags.push(Diagnostic::check(
+                            format!(
+                                "pattern matches enum `{}`, but the value is `{}`",
+                                en, enum_name
+                            ),
+                            pat.span,
+                        ));
+                        return;
+                    }
+                }
+                // Arity / unknown-variant diagnostics (cheap, best-effort). The
+                // sub-patterns may themselves be nested patterns (M2); they do
+                // not affect exhaustiveness, so we do not recurse into them here.
+                if let Some((_, arity)) = variants.iter().find(|(vn, _)| vn == name) {
+                    if *arity != subs.len() {
+                        self.diags.push(Diagnostic::check(
+                            format!(
+                                "variant `{}::{}` expects {} field(s), but the pattern binds {}",
+                                enum_name, name, arity, subs.len()
+                            ),
+                            pat.span,
+                        ));
+                    }
+                    covered.insert(name.as_str());
+                } else {
+                    self.diags.push(Diagnostic::check(
+                        format!("unknown variant `{}` for enum `{}`", name, enum_name),
+                        pat.span,
+                    ));
+                }
+            }
+            // An or-pattern covers the union of its alternatives' coverage, so
+            // each alternative is walked recursively (`.A or .B` covers both; an
+            // alternative that is a wildcard makes the whole arm a catch-all).
+            PatternKind::Or(alts) => {
+                for alt in alts {
+                    self.cover_pattern(alt, enum_name, variants, covered, has_catch_all);
+                }
+            }
+            // null / literal / tuple patterns never cover an enum variant.
+            PatternKind::Null | PatternKind::Literal(_) | PatternKind::Tuple(_) => {}
         }
     }
 }
@@ -1177,6 +1210,183 @@ mod tests {
         let p = program(vec![expr_enum, f]);
         let errs = check_errs(&p);
         assert!(errs.iter().any(|e| e.contains("field")), "expected arity error: {:?}", errs);
+    }
+
+    // ----------------------- W2-A: guards / or-patterns --------------------
+
+    /// A niladic variant pattern (no binds) as an arm.
+    fn niladic_arm(name: &str, body: Expr) -> MatchArm {
+        variant_arm(name, &[], body)
+    }
+
+    /// An or-pattern arm over niladic variants: `.A or .B or … :`.
+    fn or_variant_arm(names: &[&str], body: Expr) -> MatchArm {
+        let alts = names
+            .iter()
+            .map(|n| Pattern {
+                kind: PatternKind::Variant {
+                    enum_name: None,
+                    name: n.to_string(),
+                    subs: vec![],
+                },
+                span: sp(),
+            })
+            .collect();
+        MatchArm {
+            pattern: Pattern { kind: PatternKind::Or(alts), span: sp() },
+            guard: None,
+            body: block(vec![stmt(StmtKind::Expr(body))]),
+            span: sp(),
+        }
+    }
+
+    /// A guard expression that is just `true` (shape only — never type-checked).
+    fn true_guard() -> Expr {
+        expr(ExprKind::Bool(true))
+    }
+
+    /// Build the canonical 3-color enum used by the guard/or tests.
+    fn color_enum() -> Stmt {
+        enum_decl("Color", &[("Red", 0), ("Green", 0), ("Blue", 0)])
+    }
+
+    fn match_over_color(arms: Vec<MatchArm>) -> Program {
+        let m = match_expr(name("c"), arms);
+        let f = fn_one_param(
+            "f",
+            "c",
+            ty_named("Color", false),
+            None,
+            vec![stmt(StmtKind::Expr(m))],
+        );
+        program(vec![color_enum(), f])
+    }
+
+    /// A guarded arm does NOT contribute coverage: if the only arm for the last
+    /// uncovered variant is guarded (and there is no `_`), the match is
+    /// non-exhaustive. **(DoD)**
+    #[test]
+    fn guarded_arm_does_not_cover() {
+        let arms = vec![
+            niladic_arm("Red", name("c")),
+            niladic_arm("Green", name("c")),
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Variant {
+                        enum_name: None,
+                        name: "Blue".to_string(),
+                        subs: vec![],
+                    },
+                    span: sp(),
+                },
+                guard: Some(true_guard()),
+                body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+                span: sp(),
+            },
+        ];
+        let p = match_over_color(arms);
+        let errs = check_errs(&p);
+        assert_eq!(errs.len(), 1, "expected one error, got {:?}", errs);
+        assert!(errs[0].contains("Blue"), "error should name Blue: {}", errs[0]);
+    }
+
+    /// Adding a `_` after the guarded arm restores exhaustiveness.
+    #[test]
+    fn guarded_arm_with_wildcard_ok() {
+        let arms = vec![
+            niladic_arm("Red", name("c")),
+            niladic_arm("Green", name("c")),
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Variant {
+                        enum_name: None,
+                        name: "Blue".to_string(),
+                        subs: vec![],
+                    },
+                    span: sp(),
+                },
+                guard: Some(true_guard()),
+                body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+                span: sp(),
+            },
+            wildcard_arm(name("c")),
+        ];
+        let p = match_over_color(arms);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// An unguarded arm for the last variant (alongside a guarded duplicate of
+    /// another) restores exhaustiveness.
+    #[test]
+    fn unguarded_arm_after_guarded_ok() {
+        let arms = vec![
+            niladic_arm("Red", name("c")),
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Variant {
+                        enum_name: None,
+                        name: "Green".to_string(),
+                        subs: vec![],
+                    },
+                    span: sp(),
+                },
+                guard: Some(true_guard()),
+                body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+                span: sp(),
+            },
+            niladic_arm("Green", name("c")),
+            niladic_arm("Blue", name("c")),
+        ];
+        let p = match_over_color(arms);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// An or-pattern covers ALL its alternatives: `.Red or .Green` + `.Blue`
+    /// exhausts Color.
+    #[test]
+    fn or_pattern_covers_all_alternatives() {
+        let arms = vec![
+            or_variant_arm(&["Red", "Green"], name("c")),
+            niladic_arm("Blue", name("c")),
+        ];
+        let p = match_over_color(arms);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// An or-pattern that omits a variant is still non-exhaustive.
+    #[test]
+    fn or_pattern_missing_variant_errors() {
+        let arms = vec![or_variant_arm(&["Red", "Green"], name("c"))];
+        let p = match_over_color(arms);
+        let errs = check_errs(&p);
+        assert_eq!(errs.len(), 1, "expected one error, got {:?}", errs);
+        assert!(errs[0].contains("Blue"), "error should name Blue: {}", errs[0]);
+    }
+
+    /// An or-pattern with a wildcard alternative makes the arm a catch-all.
+    #[test]
+    fn or_pattern_with_wildcard_alternative_ok() {
+        let arms = vec![MatchArm {
+            pattern: Pattern {
+                kind: PatternKind::Or(vec![
+                    Pattern {
+                        kind: PatternKind::Variant {
+                            enum_name: None,
+                            name: "Red".to_string(),
+                            subs: vec![],
+                        },
+                        span: sp(),
+                    },
+                    Pattern { kind: PatternKind::Wildcard, span: sp() },
+                ]),
+                span: sp(),
+            },
+            guard: None,
+            body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+            span: sp(),
+        }];
+        let p = match_over_color(arms);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
     }
 
     // ----------------------- Null-narrowing tests --------------------------

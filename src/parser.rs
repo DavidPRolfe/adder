@@ -1602,12 +1602,24 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `match_arm = pattern ":" arm_body`.
+    /// `match_arm = pattern [ "if" expr ] ":" arm_body`.
     /// `arm_body = expr NEWLINE | NEWLINE INDENT statement+ DEDENT` — both stored
     /// as a [`Block`]. An inline expr arm is wrapped as a one-statement block.
+    ///
+    /// A match guard (`pattern if cond:`) makes the arm conditional: it only
+    /// fires when `cond` is `Bool` and true (M2 Wave 2). A guarded arm does not
+    /// count toward exhaustiveness ([`crate::checks`]).
     fn parse_match_arm(&mut self) -> PResult<MatchArm> {
         let start = self.cur_span();
         let pattern = self.parse_pattern()?;
+
+        // Optional `if COND` guard between the pattern and the `:`.
+        let guard = if self.eat(&TokenKind::If) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
         self.expect(&TokenKind::Colon, "`:` after a match pattern")?;
 
         let body = if matches!(self.peek(), TokenKind::Newline) {
@@ -1623,26 +1635,47 @@ impl<'a> Parser<'a> {
         };
 
         let span = start.merge(body.span);
-        // Match guards (`pattern if cond:`) are M2 Wave 2 — the parser produces
-        // `guard: None` for now.
-        // TODO(W2-A): parse an optional `if cond` guard before the `:`.
-        Ok(MatchArm { pattern, guard: None, body, span })
+        Ok(MatchArm { pattern, guard, body, span })
     }
 
     // =====================================================================
     // Patterns (§5.8) — recursive as of M2
     // =====================================================================
 
-    /// `pattern = "_" | NULL | literal_pattern | NAME | variant_pattern`.
+    /// `pattern = primary_pattern { "or" primary_pattern }`.
     ///
-    /// Or-patterns (`p1 or p2`) and tuple patterns (`(p1, p2)`) are M2 Wave 2
-    /// and are not parsed here yet, though the AST ([`PatternKind::Or`] /
-    /// [`PatternKind::Tuple`]) can represent them. Variant sub-patterns are
-    /// recursive, so nested destructuring already parses.
-    // TODO(W2-A): parse or-patterns and tuple patterns here.
+    /// The top level is an **or-pattern** (M2 Wave 2): one or more alternatives
+    /// separated by `or`, matching if *any* alternative matches. A single
+    /// alternative collapses to that pattern (no `Or` wrapper). Or-patterns
+    /// parse here both as a whole-arm pattern and, because variant sub-patterns
+    /// recurse through [`Self::parse_pattern`], inside sub-patterns too. Literal
+    /// alternatives (`1 or 2`) and variant alternatives (`.A or .B`) both work.
     fn parse_pattern(&mut self) -> PResult<Pattern> {
+        let first = self.parse_pattern_primary()?;
+        if !matches!(self.peek(), TokenKind::Or) {
+            return Ok(first);
+        }
+        let start = first.span;
+        let mut alts = vec![first];
+        while self.eat(&TokenKind::Or) {
+            alts.push(self.parse_pattern_primary()?);
+        }
+        let span = start.merge(alts.last().unwrap().span);
+        Ok(Pattern { kind: PatternKind::Or(alts), span })
+    }
+
+    /// `primary_pattern = "_" | NULL | literal_pattern | NAME | variant_pattern
+    /// | tuple_pattern`.
+    ///
+    /// A single alternative of an or-pattern. A parenthesized form is either a
+    /// **tuple pattern** `(p1, p2, …)` (≥2 elements) or grouping `(p)` (which is
+    /// transparent — `(p)` is just `p`). Variant sub-patterns are recursive, so
+    /// nested destructuring like `.Some(.Pair(a, b))` parses here.
+    fn parse_pattern_primary(&mut self) -> PResult<Pattern> {
         let span = self.cur_span();
         match self.peek().clone() {
+            // Tuple pattern `(p1, p2, …)`, or grouping `(p)`.
+            TokenKind::LParen => self.parse_tuple_pattern(),
             TokenKind::Null => {
                 self.advance();
                 Ok(Pattern { kind: PatternKind::Null, span })
@@ -1753,6 +1786,31 @@ impl<'a> Parser<'a> {
         }
         let close = self.expect(&TokenKind::RParen, "`)` to close a variant pattern")?;
         Ok((subs, close.span))
+    }
+
+    /// Parse a parenthesized pattern: a **tuple pattern** `(p1, p2, …)` (≥2
+    /// elements, destructured element-wise against a tuple value) or, with no
+    /// comma, transparent grouping `(p)` (which is just `p`). Mirrors the
+    /// expression-side `(a, b)` tuple / `(e)` grouping distinction.
+    fn parse_tuple_pattern(&mut self) -> PResult<Pattern> {
+        let start = self.cur_span();
+        self.advance(); // `(`
+        let first = self.parse_pattern()?;
+        if matches!(self.peek(), TokenKind::Comma) {
+            let mut elems = vec![first];
+            while self.eat(&TokenKind::Comma) {
+                if matches!(self.peek(), TokenKind::RParen) {
+                    break; // tolerate a trailing comma
+                }
+                elems.push(self.parse_pattern()?);
+            }
+            let close = self.expect(&TokenKind::RParen, "`)` to close a tuple pattern")?;
+            Ok(Pattern { kind: PatternKind::Tuple(elems), span: start.merge(close.span) })
+        } else {
+            let close = self.expect(&TokenKind::RParen, "`)` to close a grouped pattern")?;
+            // Grouping is transparent; widen the span to include the parens.
+            Ok(Pattern { kind: first.kind, span: start.merge(close.span) })
+        }
     }
 
     // =====================================================================
@@ -3416,5 +3474,112 @@ mod tests {
         // `val (a) = …` is not a tuple binder (needs ≥2 names) — a parse error.
         let errs = parse_src_err("val (a) = x\n");
         assert!(!errs.is_empty());
+    }
+
+    // =====================================================================
+    // M2 Wave 2-A — match guards, or-patterns, tuple / nested patterns.
+    // =====================================================================
+
+    /// Pull the arms of a `match` out of a one-binding program
+    /// (`val r = match …`).
+    fn match_arms_of(src: &str) -> Vec<MatchArm> {
+        match expr_of(src).kind {
+            ExprKind::Match(m) => m.arms,
+            other => panic!("expected a match expr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_guard_parses() {
+        // A guarded arm records its `if cond` between the pattern and the `:`.
+        let arms = match_arms_of("val r = match n:\n    x if x > 0: 1\n    _: 0\n");
+        assert!(matches!(&arms[0].pattern.kind, PatternKind::Binding(n) if n == "x"));
+        assert!(arms[0].guard.is_some(), "first arm should be guarded");
+        assert!(arms[1].guard.is_none(), "wildcard arm is unguarded");
+    }
+
+    #[test]
+    fn or_pattern_of_literals() {
+        // `1 or 2 or 3` is a single or-pattern with three alternatives.
+        let arms = match_arms_of("val r = match n:\n    1 or 2 or 3: 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Or(alts) => {
+                assert_eq!(alts.len(), 3);
+                assert!(alts
+                    .iter()
+                    .all(|a| matches!(a.kind, PatternKind::Literal(_))));
+            }
+            other => panic!("expected an or-pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn or_pattern_of_variants() {
+        // `.A or .B` covers two leading-dot variant alternatives.
+        let arms = match_arms_of("val r = match c:\n    .A or .B: 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Or(alts) => {
+                assert_eq!(alts.len(), 2);
+                assert!(matches!(
+                    &alts[0].kind,
+                    PatternKind::Variant { name, .. } if name == "A"
+                ));
+                assert!(matches!(
+                    &alts[1].kind,
+                    PatternKind::Variant { name, .. } if name == "B"
+                ));
+            }
+            other => panic!("expected an or-pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tuple_pattern_parses() {
+        // `(a, b)` destructures a pair element-wise.
+        let arms = match_arms_of("val r = match p:\n    (a, b): 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Tuple(elems) => {
+                assert_eq!(elems.len(), 2);
+                assert!(matches!(&elems[0].kind, PatternKind::Binding(n) if n == "a"));
+            }
+            other => panic!("expected a tuple pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn grouped_pattern_is_transparent() {
+        // `(p)` with no comma is grouping, not a 1-tuple.
+        let arms = match_arms_of("val r = match p:\n    (a): 1\n    _: 0\n");
+        assert!(matches!(&arms[0].pattern.kind, PatternKind::Binding(n) if n == "a"));
+    }
+
+    #[test]
+    fn nested_variant_subpattern() {
+        // A variant sub-pattern may itself be a variant pattern.
+        let arms = match_arms_of("val r = match v:\n    .Some(.Pair(a, b)): 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Variant { name, subs, .. } => {
+                assert_eq!(name, "Some");
+                assert_eq!(subs.len(), 1);
+                assert!(matches!(
+                    &subs[0].kind,
+                    PatternKind::Variant { name, .. } if name == "Pair"
+                ));
+            }
+            other => panic!("expected a nested variant pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn or_pattern_inside_variant_sub() {
+        // An or-pattern nests inside a variant sub-pattern: `.Tag(1 or 2)`.
+        let arms = match_arms_of("val r = match v:\n    .Tag(1 or 2): 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Variant { subs, .. } => {
+                assert_eq!(subs.len(), 1);
+                assert!(matches!(&subs[0].kind, PatternKind::Or(alts) if alts.len() == 2));
+            }
+            other => panic!("expected a variant pattern, got {:?}", other),
+        }
     }
 }
