@@ -1,0 +1,18 @@
+## Enums: namespaced variants, qualified construction, leading-dot match.
+
+enum Shape:
+    Circle(radius: Float)
+    Rect(w: Float, h: Float)
+    Unit                          # a niladic variant — no payload
+
+fn area(s: Shape) returns Float:
+    return match s:
+        .Circle(r):  3.14159 * r * r     # leading-dot: enum inferred from scrutinee
+        .Rect(w, h): w * h
+        .Unit:       1.0
+
+fn main():
+    print(area(Shape.Circle(radius: 2.0)))   # 12.56636
+    print(area(Shape.Rect(w: 3.0, h: 4.0)))  # 12.0
+    print(area(Shape.Unit))                  # 1.0
+    print(Shape.Unit == Shape.Unit)          # true  (niladic structural equality)

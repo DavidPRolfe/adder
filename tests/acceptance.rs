@@ -122,3 +122,16 @@ fn method_mutates_self_in_place() {
     assert!(lines[1].ends_with("area 48.0"), "got {:?}", lines);
     assert!(lines[2].ends_with("area 1200.0"), "got {:?}", lines);
 }
+
+// ===========================================================================
+// Enums — namespaced variants: qualified construction (`Shape.Circle(...)`),
+// leading-dot match arms (`.Circle(r)`), niladic variants, and structural `==`.
+// (The niladic case — `Shape.Unit` as a value — was previously unusable.)
+// ===========================================================================
+
+#[test]
+fn qualified_enum_variants_construct_and_match() {
+    let o = run_fixture("examples/shapes_enum.adr");
+    assert!(o.status.success(), "enum example should run; stderr:\n{}", stderr(&o));
+    assert_eq!(stdout(&o).lines().collect::<Vec<_>>(), vec!["12.56636", "12.0", "1.0", "true"]);
+}

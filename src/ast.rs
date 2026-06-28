@@ -474,8 +474,15 @@ pub enum PatternKind {
     Literal(LitPattern),
     /// A bare `NAME` — binds the whole scrutinee.
     Binding(String),
-    /// A single-level variant destructure `NAME ( sub, … )`.
+    /// A single-level variant destructure. Variants are **qualified**: either
+    /// the leading-dot form `.Variant(sub, …)` (enum inferred from the
+    /// scrutinee) or the explicit `Enum.Variant(sub, …)`. A niladic variant
+    /// drops the parentheses (`.Empty` / `Enum.Empty`). A *bare* `NAME(…)` is
+    /// no longer a variant pattern (a bare `NAME` is a [`PatternKind::Binding`]).
     Variant {
+        /// `Some("Color")` for the qualified form `Color.Red`; `None` for the
+        /// leading-dot form `.Red`, resolved against the scrutinee's enum.
+        enum_name: Option<String>,
         name: String,
         subs: Vec<SubPattern>,
     },

@@ -1369,6 +1369,17 @@ impl<'a> Parser<'a> {
                 })?;
                 Ok(Pattern { kind: PatternKind::Literal(LitPattern::Str(s)), span })
             }
+            // Leading-dot variant pattern `.Variant[(subs)]` — enum inferred
+            // from the scrutinee.
+            TokenKind::Dot => {
+                self.advance(); // `.`
+                let (variant, vspan) = self.expect_name("a variant name after `.`")?;
+                let (subs, end) = self.parse_variant_subs(vspan)?;
+                Ok(Pattern {
+                    kind: PatternKind::Variant { enum_name: None, name: variant, subs },
+                    span: span.merge(end),
+                })
+            }
             TokenKind::Name(name) => {
                 // `_` is a NAME-shaped token; treat it as the wildcard.
                 if name == "_" {
@@ -1376,27 +1387,28 @@ impl<'a> Parser<'a> {
                     return Ok(Pattern { kind: PatternKind::Wildcard, span });
                 }
                 self.advance();
-                if matches!(self.peek(), TokenKind::LParen) {
-                    // Variant pattern `NAME ( sub, … )`.
-                    self.advance(); // `(`
-                    let mut subs = Vec::new();
-                    if !matches!(self.peek(), TokenKind::RParen) {
-                        loop {
-                            subs.push(self.parse_sub_pattern()?);
-                            if !self.eat(&TokenKind::Comma) {
-                                break;
-                            }
-                            if matches!(self.peek(), TokenKind::RParen) {
-                                break;
-                            }
-                        }
-                    }
-                    let close =
-                        self.expect(&TokenKind::RParen, "`)` to close a variant pattern")?;
+                if matches!(self.peek(), TokenKind::Dot) {
+                    // Qualified variant pattern `Enum.Variant[(subs)]`.
+                    self.advance(); // `.`
+                    let (variant, vspan) = self.expect_name("a variant name after `.`")?;
+                    let (subs, end) = self.parse_variant_subs(vspan)?;
                     Ok(Pattern {
-                        kind: PatternKind::Variant { name, subs },
-                        span: span.merge(close.span),
+                        kind: PatternKind::Variant {
+                            enum_name: Some(name),
+                            name: variant,
+                            subs,
+                        },
+                        span: span.merge(end),
                     })
+                } else if matches!(self.peek(), TokenKind::LParen) {
+                    // A bare `NAME(...)` is no longer a variant pattern — variants
+                    // are qualified.
+                    Err(Diagnostic::parse(
+                        format!(
+                            "variant patterns name their enum: write `.{name}(...)` or `Enum.{name}(...)`"
+                        ),
+                        span,
+                    ))
                 } else {
                     // Bare binding name.
                     Ok(Pattern { kind: PatternKind::Binding(name), span })
@@ -1407,6 +1419,30 @@ impl<'a> Parser<'a> {
                 span,
             )),
         }
+    }
+
+    /// Parse the optional `"(" sub_pattern , … ")"` payload of a variant pattern.
+    /// A niladic variant (no parens) yields an empty `subs` list. Returns the
+    /// sub-patterns and the span of the variant's last token.
+    fn parse_variant_subs(&mut self, name_span: Span) -> PResult<(Vec<SubPattern>, Span)> {
+        if !matches!(self.peek(), TokenKind::LParen) {
+            return Ok((Vec::new(), name_span));
+        }
+        self.advance(); // `(`
+        let mut subs = Vec::new();
+        if !matches!(self.peek(), TokenKind::RParen) {
+            loop {
+                subs.push(self.parse_sub_pattern()?);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                if matches!(self.peek(), TokenKind::RParen) {
+                    break;
+                }
+            }
+        }
+        let close = self.expect(&TokenKind::RParen, "`)` to close a variant pattern")?;
+        Ok((subs, close.span))
     }
 
     /// `sub_pattern = "_" | NAME | NULL | literal_pattern` — no nesting.
@@ -2379,7 +2415,8 @@ mod tests {
             t(TokenKind::Colon),
             nl(),
             t(TokenKind::Indent),
-            // Num(n): n
+            // .Num(n): n
+            t(TokenKind::Dot),
             name("Num"),
             t(TokenKind::LParen),
             name("n"),
@@ -2387,7 +2424,8 @@ mod tests {
             t(TokenKind::Colon),
             name("n"),
             nl(),
-            // Add(a, b): block
+            // .Add(a, b): block
+            t(TokenKind::Dot),
             name("Add"),
             t(TokenKind::LParen),
             name("a"),
@@ -2424,15 +2462,15 @@ mod tests {
                 // arm 0: variant Num(n), inline body (1 stmt)
                 assert!(matches!(
                     &m.arms[0].pattern.kind,
-                    PatternKind::Variant { name, subs }
-                        if name == "Num" && subs.len() == 1
+                    PatternKind::Variant { enum_name, name, subs }
+                        if enum_name.is_none() && name == "Num" && subs.len() == 1
                 ));
                 assert_eq!(m.arms[0].body.stmts.len(), 1);
-                // arm 1: variant Add(a, b), block body (2 stmts)
+                // arm 1: variant .Add(a, b), block body (2 stmts)
                 assert!(matches!(
                     &m.arms[1].pattern.kind,
-                    PatternKind::Variant { name, subs }
-                        if name == "Add" && subs.len() == 2
+                    PatternKind::Variant { enum_name, name, subs }
+                        if enum_name.is_none() && name == "Add" && subs.len() == 2
                 ));
                 assert_eq!(m.arms[1].body.stmts.len(), 2);
                 // arm 2: wildcard
@@ -2470,13 +2508,15 @@ mod tests {
     #[test]
     fn variant_pattern_with_null_and_literal_subs() {
         // match e:
-        //     V(_, null, 3): 1
+        //     E.V(_, null, 3): 1
         let toks = vec![
             t(TokenKind::Match),
             name("e"),
             t(TokenKind::Colon),
             nl(),
             t(TokenKind::Indent),
+            name("E"),
+            t(TokenKind::Dot),
             name("V"),
             t(TokenKind::LParen),
             name("_"),
@@ -2498,7 +2538,8 @@ mod tests {
         };
         match &e.kind {
             ExprKind::Match(m) => match &m.arms[0].pattern.kind {
-                PatternKind::Variant { name, subs } => {
+                PatternKind::Variant { enum_name, name, subs } => {
+                    assert_eq!(enum_name.as_deref(), Some("E"));
                     assert_eq!(name, "V");
                     assert_eq!(subs.len(), 3);
                     assert!(matches!(subs[0], SubPattern::Wildcard));

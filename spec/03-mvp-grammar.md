@@ -369,11 +369,14 @@ primary    = INT | FLOAT | BOOL | NULL | STRING
 list_literal = "[" [ expr , … ] "]"
 ```
 
-A `call_suffix` covers both function calls (`eval(a)`, `print(x)`) and struct/enum
-construction (`Point(x: 1.0, y: 2.0)`, `Num(1.0)`, `Add(a, b)`) — they share syntax,
-and `arg` permits positional or `name:`-prefixed values. Which it *is* (call vs.
-construct, named vs. positional validity) is resolved semantically. `.or_else(default)`
-is just a `member_suffix` + `call_suffix`, requiring no special grammar.
+A `call_suffix` covers both function calls (`eval(a)`, `print(x)`) and construction.
+**Struct** construction is a bare call (`Point(x: 1.0, y: 2.0)`). **Enum-variant**
+construction is *qualified* — a `member_suffix` then a `call_suffix`
+(`Expr.Num(1.0)`, `Expr.Add(a, b)`), or just the `member_suffix` for a niladic variant
+(`Color.Red`). `arg` permits positional or `name:`-prefixed values. Which a call *is*
+(function vs. construction, named vs. positional validity) is resolved semantically.
+`.or_else(default)` is likewise a `member_suffix` + `call_suffix`, requiring no special
+grammar.
 
 ### 5.6 Prelude built-ins
 
@@ -412,7 +415,7 @@ pattern        = "_"                    # wildcard
                | NAME                   # binds the whole scrutinee
                | variant_pattern
 
-variant_pattern = NAME "(" [ sub_pattern , … ] ")"
+variant_pattern = [ NAME ] "." NAME [ "(" [ sub_pattern , … ] ")" ]
 sub_pattern     = "_" | NAME | NULL | literal_pattern   # "simple bindings" only
 
 literal_pattern = INT | FLOAT | BOOL | STRING
@@ -423,9 +426,13 @@ or a single-level variant destructure whose sub-patterns are simple (a binding, 
 `null`, or a literal — no nested variant patterns). Match guards (`if …`), or-patterns
 (`1 or 2`), and nested destructuring are deferred to M2.
 
-A bare `NAME` pattern is a binding (it always matches and names the value); a `NAME`
-immediately followed by `(` is a variant pattern. There is no separate identifier-vs-
-constructor lexical distinction — the `(` disambiguates.
+Variant patterns are **qualified**: the leading-dot form `.Variant` (the enum is
+inferred from the scrutinee) or the explicit `Enum.Variant`, with an optional
+`( sub, … )` payload that is omitted for a niladic variant (`.Empty`, `Color.Red`).
+The leading `.` is what marks a variant, so a **bare `NAME` pattern is always a
+binding** (it matches anything and names the value) and a bare `NAME(…)` is *not* a
+variant pattern. This removes the identifier-vs-constructor ambiguity and lets niladic
+variants be matched precisely.
 
 ---
 
@@ -463,17 +470,17 @@ enum Expr:                       # enum_decl → variant_decl × 4
 
 fn eval(e: Expr) returns Float:  # fn_decl with param + returns
     return match e:              # return_stmt of a match_expr (primary)
-        Num(n):    n             # variant_pattern → inline arm_body
-        Add(a, b): eval(a) + eval(b)
-        Mul(a, b): eval(a) * eval(b)
-        Div(a, b):               # block arm_body: stmts, last expr is value
+        .Num(n):    n            # leading-dot variant_pattern → inline arm_body
+        .Add(a, b): eval(a) + eval(b)
+        .Mul(a, b): eval(a) * eval(b)
+        .Div(a, b):              # block arm_body: stmts, last expr is value
             divisor = eval(b)    # inferred binding
             if divisor == 0.0:   # if_stmt, comparison condition
                 panic("division by zero")   # call_form
             eval(a) / divisor    # final expression = arm value
 
 fn main():                       # fn_decl, no returns (unit)
-    program = Mul(Add(Num(1.0), Num(2.0)), Num(3.0))   # construction calls
+    program = Expr.Mul(Expr.Add(Expr.Num(1.0), Expr.Num(2.0)), Expr.Num(3.0))  # qualified construction
     print("= {eval(program)}")   # print form + STRING with interpolation
 ```
 

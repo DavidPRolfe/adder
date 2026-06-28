@@ -8,10 +8,10 @@ enum Expr:
 
 fn eval(e: Expr) returns Float:
     return match e:
-        Num(n):    n
-        Add(a, b): eval(a) + eval(b)
-        Mul(a, b): eval(a) * eval(b)
-        Div(a, b):
+        .Num(n):    n
+        .Add(a, b): eval(a) + eval(b)
+        .Mul(a, b): eval(a) * eval(b)
+        .Div(a, b):
             divisor = eval(b)
             if divisor == 0.0:
                 panic("division by zero")
@@ -19,5 +19,5 @@ fn eval(e: Expr) returns Float:
 
 fn main():
     # (1 + 2) * 3
-    program = Mul(Add(Num(1.0), Num(2.0)), Num(3.0))
+    program = Expr.Mul(Expr.Add(Expr.Num(1.0), Expr.Num(2.0)), Expr.Num(3.0))
     print("= {eval(program)}")     # = 9.0

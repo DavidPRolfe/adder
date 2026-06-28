@@ -253,13 +253,20 @@ enum Json:
 Arms use the same `:` block syntax as everything else (inline or indented). No
 special arrow:
 
+Variants are **namespaced under their enum**: construct with `Shape.Circle(...)`
+(niladic variants are just `Shape.Empty`), and match with the leading-dot form
+`.Circle(r)` (enum inferred from the scrutinee) or the explicit `Shape.Circle(r)`. A
+bare `NAME` in a pattern is always a binding, so niladic variants match unambiguously.
+
 ```adder
 fn area(s: Shape) returns Float:
     return match s:
-        Circle(r):       3.14159 * r * r
-        Rectangle(w, h): w * h
-        Empty:           0.0
+        .Circle(r):       3.14159 * r * r
+        .Rectangle(w, h): w * h
+        .Empty:           0.0
         # Omitting a variant is a COMPILE ERROR (exhaustiveness).
+
+big = Shape.Rectangle(width: 3.0, height: 4.0)   # qualified construction
 ```
 
 Patterns can destructure, bind, guard, and use literals / wildcards:
@@ -276,7 +283,7 @@ An indented block works when an arm needs more than one line:
 
 ```adder
 match s:
-    Circle(r):
+    .Circle(r):
         d = 2.0 * r
         log("circle, diameter {d}")
         3.14159 * r * r

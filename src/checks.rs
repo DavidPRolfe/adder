@@ -388,7 +388,20 @@ impl<'a> Exhaustiveness<'a> {
             match &arm.pattern.kind {
                 PatternKind::Wildcard => has_catch_all = true,
                 PatternKind::Binding(_) => has_catch_all = true, // bare NAME matches anything
-                PatternKind::Variant { name, subs } => {
+                PatternKind::Variant { enum_name: qual, name, subs } => {
+                    // A qualified pattern must name the scrutinee's enum.
+                    if let Some(en) = qual {
+                        if en != &enum_name {
+                            self.diags.push(Diagnostic::check(
+                                format!(
+                                    "pattern matches enum `{}`, but the value is `{}`",
+                                    en, enum_name
+                                ),
+                                arm.pattern.span,
+                            ));
+                            continue;
+                        }
+                    }
                     // Arity / unknown-variant diagnostics (cheap, best-effort).
                     if let Some((_, arity)) = variants.iter().find(|(vn, _)| vn == name) {
                         if *arity != subs.len() {
@@ -811,6 +824,7 @@ mod tests {
         MatchArm {
             pattern: Pattern {
                 kind: PatternKind::Variant {
+                    enum_name: None,
                     name: name.to_string(),
                     subs: binds.iter().map(|b| SubPattern::Binding(b.to_string())).collect(),
                 },

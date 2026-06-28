@@ -63,9 +63,12 @@ inference, and broader static type checking, are a later milestone.
   inherent methods (defined in an `impl Type` block — not in the struct body).
 
 **Enums + match**
-- Variants with positional/named data.
+- Variants with positional/named data, **namespaced under their enum**: constructed
+  as `Enum.Variant(...)` (niladic variants are just `Enum.Variant`).
 - `match` as an expression, with **exhaustiveness checking**.
 - Patterns: variant destructuring with simple bindings, literals, `null`, and `_`.
+  Variant patterns are qualified — the leading-dot form `.Variant(...)` (enum inferred
+  from the scrutinee) or the explicit `Enum.Variant(...)`. A bare `NAME` is a binding.
 
 **Nullability**
 - `T?`, `null`, `is not null` **smart-narrowing**, `x.or_else(default)`.
@@ -119,10 +122,10 @@ enum Expr:
 
 fn eval(e: Expr) returns Float:
     return match e:
-        Num(n):    n
-        Add(a, b): eval(a) + eval(b)
-        Mul(a, b): eval(a) * eval(b)
-        Div(a, b):
+        .Num(n):    n
+        .Add(a, b): eval(a) + eval(b)
+        .Mul(a, b): eval(a) * eval(b)
+        .Div(a, b):
             divisor = eval(b)
             if divisor == 0.0:
                 panic("division by zero")
@@ -130,7 +133,7 @@ fn eval(e: Expr) returns Float:
 
 fn main():
     # (1 + 2) * 3
-    program = Mul(Add(Num(1.0), Num(2.0)), Num(3.0))
+    program = Expr.Mul(Expr.Add(Expr.Num(1.0), Expr.Num(2.0)), Expr.Num(3.0))
     print("= {eval(program)}")     # = 9.0
 ```
 

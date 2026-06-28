@@ -998,6 +998,14 @@ impl Interp {
     /// Member access `base.name`. Used for struct field reads. (Method calls
     /// flow through `eval_call` which special-cases a `Member` callee.)
     fn eval_member(&mut self, base: &Expr, name: &str, span: Span, env: &Env) -> EvalResult {
+        // Qualified niladic enum-variant value: `Enum.Variant` with no call.
+        if let ExprKind::Name(enum_name) = &base.kind {
+            if env_get(env, enum_name).is_none()
+                && self.registry.enums.contains_key(enum_name)
+            {
+                return self.construct_variant(enum_name, name, &[], span, env);
+            }
+        }
         let base_v = self.eval(base, env)?;
         self.member_value(&base_v, name, span)
     }
@@ -1037,8 +1045,18 @@ impl Interp {
         span: Span,
         env: &Env,
     ) -> EvalResult {
-        // Method call: `recv.method(args)`.
         if let ExprKind::Member { base, name } = &callee.kind {
+            // Qualified enum-variant construction: `Enum.Variant(args)`. Only
+            // when the base names a known enum that isn't shadowed by a value.
+            if let ExprKind::Name(enum_name) = &base.kind {
+                if env_get(env, enum_name).is_none()
+                    && self.registry.enums.contains_key(enum_name)
+                {
+                    return self.construct_variant(enum_name, name, args, span, env);
+                }
+            }
+
+            // Otherwise it is a method call `recv.method(args)`.
             let recv = self.eval(base, env)?;
 
             // Built-in `.or_else(default)` on a possibly-null value.
@@ -1059,17 +1077,13 @@ impl Interp {
             return self.call_method(recv, name, args, span, env);
         }
 
-        // Construction: a bare name referring to a struct / enum variant.
+        // Construction: a bare name referring to a struct. (Enum variants are
+        // qualified — `Enum.Variant(...)` — handled above, not bare.)
         if let ExprKind::Name(name) = &callee.kind {
             // A local binding shadows construction (e.g. a closure named the
             // same). Only treat as construction if NOT bound to a value.
-            if env_get(env, name).is_none() {
-                if self.registry.structs.contains_key(name) {
-                    return self.construct_struct(name, args, span, env);
-                }
-                if let Some(enum_name) = self.registry.variant_to_enum.get(name).cloned() {
-                    return self.construct_variant(&enum_name, name, args, span, env);
-                }
+            if env_get(env, name).is_none() && self.registry.structs.contains_key(name) {
+                return self.construct_struct(name, args, span, env);
             }
         }
 
@@ -1337,11 +1351,15 @@ impl Interp {
         env: &Env,
     ) -> EvalResult {
         let decl = self.registry.enums.get(enum_name).cloned().unwrap();
-        let vdecl = decl
-            .variants
-            .iter()
-            .find(|v| v.name == variant)
-            .expect("variant_to_enum is consistent");
+        let vdecl = match decl.variants.iter().find(|v| v.name == variant) {
+            Some(v) => v,
+            None => {
+                return Err(Diagnostic::runtime(
+                    format!("enum `{}` has no variant `{}`", enum_name, variant),
+                    span,
+                ));
+            }
+        };
 
         let mut payload = Vec::new();
         let mut payload_names = Vec::new();
@@ -1492,11 +1510,17 @@ impl Interp {
                 env_define(scope, name, val.clone(), false);
                 Ok(true)
             }
-            PatternKind::Variant { name, subs } => {
+            PatternKind::Variant { enum_name, name, subs } => {
                 let inst = match val {
                     Value::Enum(e) => e,
                     _ => return Ok(false),
                 };
+                // A qualified pattern `Enum.Variant` must match the value's enum.
+                if let Some(en) = enum_name {
+                    if &inst.enum_name != en {
+                        return Ok(false);
+                    }
+                }
                 if &inst.variant != name {
                     return Ok(false);
                 }
@@ -2051,7 +2075,11 @@ mod tests {
             arms: vec![
                 MatchArm {
                     pattern: Pattern {
-                        kind: PatternKind::Variant { name: "A".to_string(), subs: vec![] },
+                        kind: PatternKind::Variant {
+                            enum_name: None,
+                            name: "A".to_string(),
+                            subs: vec![],
+                        },
                         span: sp(),
                     },
                     body: block(vec![expr_stmt(int(0))]),
@@ -2060,6 +2088,7 @@ mod tests {
                 MatchArm {
                     pattern: Pattern {
                         kind: PatternKind::Variant {
+                            enum_name: None,
                             name: "B".to_string(),
                             subs: vec![SubPattern::Binding("n".to_string())],
                         },
@@ -2289,6 +2318,7 @@ mod tests {
         fn variant_pat(name: &str, subs: Vec<&str>) -> Pattern {
             Pattern {
                 kind: PatternKind::Variant {
+                    enum_name: None,
                     name: name.to_string(),
                     subs: subs
                         .into_iter()
@@ -2436,14 +2466,17 @@ mod tests {
             interp.exec_stmt(stmt, &root).unwrap();
         }
 
-        // program = Mul(Add(Num(1.0), Num(2.0)), Num(3.0))
-        let num = |f: f64| call(name("Num"), vec![float(f)]);
-        let prog_expr = call(
-            name("Mul"),
-            vec![
-                call(name("Add"), vec![num(1.0), num(2.0)]),
-                num(3.0),
-            ],
+        // program = Expr.Mul(Expr.Add(Expr.Num(1.0), Expr.Num(2.0)), Expr.Num(3.0))
+        let vc = |v: &str, args: Vec<Expr>| {
+            call(
+                ex(ExprKind::Member { base: Box::new(name("Expr")), name: v.to_string() }),
+                args,
+            )
+        };
+        let num = |f: f64| vc("Num", vec![float(f)]);
+        let prog_expr = vc(
+            "Mul",
+            vec![vc("Add", vec![num(1.0), num(2.0)]), num(3.0)],
         );
         let call_eval = call(name("eval"), vec![prog_expr]);
 
@@ -2476,6 +2509,7 @@ mod tests {
         fn variant_pat(name: &str, subs: Vec<&str>) -> Pattern {
             Pattern {
                 kind: PatternKind::Variant {
+                    enum_name: None,
                     name: name.to_string(),
                     subs: subs
                         .into_iter()
@@ -2573,8 +2607,14 @@ mod tests {
             interp.exec_stmt(stmt, &root).unwrap();
         }
 
-        let num = |f: f64| call(name("Num"), vec![float(f)]);
-        let div_zero = call(name("eval"), vec![call(name("Div"), vec![num(1.0), num(0.0)])]);
+        let vc = |v: &str, args: Vec<Expr>| {
+            call(
+                ex(ExprKind::Member { base: Box::new(name("E")), name: v.to_string() }),
+                args,
+            )
+        };
+        let num = |f: f64| vc("Num", vec![float(f)]);
+        let div_zero = call(name("eval"), vec![vc("Div", vec![num(1.0), num(0.0)])]);
         let r = interp.eval(&div_zero, &root);
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("division by zero"));
