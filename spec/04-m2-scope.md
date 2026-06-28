@@ -177,8 +177,9 @@ literal, tuple destructuring in a `for`, and a guarded `match` arm.
 
 ## Definition of done for Milestone 2
 
-- The showcase above runs and prints `sum of even squares = 56`, `[1, 4, 16, 25]`, the
-  three `name: label` lines, and `total = 10`.
+- The showcase above (shipped as [`examples/m2_showcase.adr`](../examples/m2_showcase.adr),
+  guarded by `tests/m2_showcase.rs`) runs and prints `sum of even squares = 56`,
+  `[1, 4, 16, 25]`, the three `name: label` lines, and `total = 10`.
 - A lambda passed to a function-typed parameter is called; a wrong-arity call is a
   **runtime** error.
 - `xs.filter(p).map(f).fold(init, g)` runs end-to-end over a `List` and a range.
