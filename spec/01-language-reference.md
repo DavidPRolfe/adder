@@ -8,7 +8,8 @@ Guiding constraints (see [00-design-principles.md](00-design-principles.md)):
 a modern Python successor — indentation syntax, strong static typing with heavy
 inference, GC, traits without inheritance, mutable-by-default, Kotlin-style
 nullability, hybrid error handling, and a standing preference for **English words
-over symbols** so the language reads well to relative beginners.
+over symbols** so the language reads well to programmers fluent in mainstream
+languages.
 
 ---
 
@@ -24,7 +25,7 @@ over symbols** so the language reads well to relative beginners.
 - **Comments:** `#` to end of line. Doc comments: `##` immediately above a
   declaration (attaches to it for tooling).
 - **Keywords (proposed):** `fn val struct enum trait impl for in to while if
-  elif else match return returns break continue import from as and or not is try
+  elif else match return break continue import from as and or not is try
   panic true false null Self`
   - `mut` is **not** a keyword — variables are mutable by default; `val` opts *into*
     immutability.
@@ -41,15 +42,16 @@ over symbols** so the language reads well to relative beginners.
 | Error propagation | `try expr` | `expr?` |
 | Null fallback | `x.or_else(default)` | `x ?: default` |
 | Anonymous function | `x -> x + 1` | `\|x\| x + 1` |
-| Return type | `fn f(...) returns Int:` | `fn f(...) -> Int:` |
+| Return type | `fn f(...) -> Int:` | `fn f(...) returns Int:` (`returns` dropped) |
 | Comparison / math | `< <= > >= + - * / % **` | (kept — universally understood) |
 
 > `is` / `is not` here mean **value equality** (and read naturally with `null`,
 > `true`, `false`). Unlike Python, `is` is *not* identity comparison — that footgun
 > is removed. `==` / `!=` remain as equivalents for those who prefer them.
 >
-> Note `->` is now reserved for lambdas only; the result type of a function uses the
-> `returns` keyword, so the arrow never means two things.
+> `->` is the function/mapping arrow — it types lambda values, function *types*, AND
+> declaration return types, read uniformly as "maps to". One arrow spells every
+> function-like result, and the `returns` keyword is dropped from the language.
 >
 > **The nullability sigils are a deliberate exception to "words win."** `T?` and `?.`
 > attach to *types* and *member access*, where an English word would not compose
@@ -87,7 +89,7 @@ pi = 3.0             # ERROR: cannot reassign a `val`
 - **Static, strong, inferred.** Every expression has a type known at compile time.
 - **The annotation boundary is the function signature.** Inside a function, almost
   nothing is annotated — local variables, literals, and lambdas all infer their
-  types. At a `fn`, types are **required**: both parameter types and the `returns`
+  types. At a `fn`, types are **required**: both parameter types and the `->`
   result type (see §4).
   - This is the honest version of "you rarely write types": you write them *at
     signatures*, not on every line. Inferring return types (and eventually local
@@ -146,31 +148,31 @@ literal_brace = "use {{ and }}" # escaped braces
 
 ## 4. Functions
 
-A function signature is **fully annotated** — parameter types and a `returns` clause
-for the result. The signature is the one place types are mandatory; everything inside
+A function signature is **fully annotated** — parameter types and an `->` result
+clause. The signature is the one place types are mandatory; everything inside
 the body is inferred (see §3).
 
 ```adder
-fn add(a: Int, b: Int) returns Int:
+fn add(a: Int, b: Int) -> Int:
     return a + b
 
 # Implicit return of the final expression is allowed:
-fn square(x: Int) returns Int:
+fn square(x: Int) -> Int:
     x * x
 
-# A function that returns nothing omits the `returns` clause:
+# A function that returns nothing omits the `->` clause:
 fn log(msg: String):
     print(msg)
 ```
 
-> *(Ergonomics note: requiring an explicit `returns` type is a deliberate v1
+> *(Ergonomics note: requiring an explicit `->` result type is a deliberate v1
 > simplification. Inferring the return type from the body — so you could drop it on
 > local helpers — is a planned later improvement, not a v1 feature.)*
 
 ### Default and named arguments *(proposed for v1)*
 
 ```adder
-fn greet(name: String, greeting: String = "Hello") returns String:
+fn greet(name: String, greeting: String = "Hello") -> String:
     return "{greeting}, {name}!"
 
 greet("Ada")                       # "Hello, Ada!"
@@ -193,7 +195,7 @@ Lambdas are single-expression (like Python's `lambda`). For anything multi-state
 define a named `fn` — it keeps inline code readable:
 
 ```adder
-fn clean(item: String) returns String:
+fn clean(item: String) -> String:
     trimmed = item.trim()
     return trimmed.to_upper()
 
@@ -212,7 +214,7 @@ struct Point:
     y: Float
 
 impl Point:
-    fn distance_to(self, other: Point) returns Float:
+    fn distance_to(self, other: Point) -> Float:
         dx = self.x - other.x
         dy = self.y - other.y
         return (dx * dx + dy * dy).sqrt()
@@ -259,7 +261,7 @@ Variants are **namespaced under their enum**: construct with `Shape.Circle(...)`
 bare `NAME` in a pattern is always a binding, so niladic variants match unambiguously.
 
 ```adder
-fn area(s: Shape) returns Float:
+fn area(s: Shape) -> Float:
     return match s:
         .Circle(r):       3.14159 * r * r
         .Rectangle(w, h): w * h
@@ -308,10 +310,10 @@ A trait declares method signatures and optional default methods:
 
 ```adder
 trait Drawable:
-    fn area(self) returns Float
+    fn area(self) -> Float
 
     ## default method built on the required ones
-    fn describe(self) returns String:
+    fn describe(self) -> String:
         return "a shape with area {self.area()}"
 ```
 
@@ -319,12 +321,12 @@ Implement a trait for a type with `impl ... for`:
 
 ```adder
 impl Drawable for Circle:
-    fn area(self) returns Float:
+    fn area(self) -> Float:
         return 3.14159 * self.radius * self.radius
     # describe() is inherited from the trait default
 
 impl Drawable for Rectangle:
-    fn area(self) returns Float:
+    fn area(self) -> Float:
         return self.width * self.height
 ```
 
@@ -332,7 +334,7 @@ Inherent methods (not tied to a trait) live in a plain `impl`:
 
 ```adder
 impl Circle:
-    fn diameter(self) returns Float:
+    fn diameter(self) -> Float:
         return self.radius * 2.0
 ```
 
@@ -399,7 +401,7 @@ the synthesized one — e.g. a case-insensitive `Eq`, or a prettier `Show`:
 
 ```adder
 impl Show for Point:
-    fn show(self) returns String:
+    fn show(self) -> String:
         return "({self.x}, {self.y})"
 
 print(Point(x: 1, y: 2))    # (1, 2)
@@ -480,14 +482,14 @@ enum Result[T, E]:      # built-in / prelude
     Ok(T)
     Err(E)
 
-fn parse_int(s: String) returns Result[Int, ParseError]:
+fn parse_int(s: String) -> Result[Int, ParseError]:
     ...
 ```
 
 Propagate with `try` (returns early on `Err`, unwraps on `Ok`):
 
 ```adder
-fn sum_file(path: String) returns Result[Int, IoError]:
+fn sum_file(path: String) -> Result[Int, IoError]:
     text  = try read_file(path)        # unwrap Ok, or return the Err
     total = 0
     for line in text.lines():
@@ -506,7 +508,7 @@ match parse_int(input):
 ### Unrecoverable bugs → `panic`
 
 ```adder
-fn get(self, i: Int) returns T:
+fn get(self, i: Int) -> T:
     if i < 0 or i >= self.len():
         panic("index {i} out of bounds")
     ...
@@ -523,12 +525,12 @@ expected failure modes (those use `Result`). The `.expect(...)` method on a null
 Type parameters in `[ ]` (no `< >` ambiguity); bounds via `:`.
 
 ```adder
-fn first[T](xs: List[T]) returns T?:
+fn first[T](xs: List[T]) -> T?:
     if xs.is_empty():
         return null
     return xs[0]
 
-fn max[T: Ord](a: T, b: T) returns T:
+fn max[T: Ord](a: T, b: T) -> T:
     return a if a > b else b      # ternary form (proposed)
 
 struct Stack[T]:
@@ -538,7 +540,7 @@ impl Stack[T]:
     fn push(self, x: T):
         self.items.append(x)
 
-    fn pop(self) returns T?:
+    fn pop(self) -> T?:
         return self.items.pop_last()   # T? when empty
 ```
 
@@ -689,7 +691,7 @@ enum Expr:
 enum EvalError:
     DivideByZero
 
-fn eval(e: Expr) returns Result[Float, EvalError]:
+fn eval(e: Expr) -> Result[Float, EvalError]:
     return match e:
         Num(n):    Ok(n)
         Add(a, b): Ok(try eval(a) + try eval(b))
@@ -717,7 +719,7 @@ word-based feel. What's absent: lifetimes, type annotations on locals, inheritan
 
 ## 14. Index of open questions
 
-1. **Return-type inference ergonomics** — let private helpers drop the `returns`
+1. **Return-type inference ergonomics** — let private helpers drop the `->` result
    clause (and eventually param types) once inference is stronger. Deferred, not v1.
 2. **Default/named arguments** — confirm for v1 (leaning defer; see MVP scope).
 3. **Per-field immutability** on structs (`val` fields).
@@ -736,5 +738,6 @@ word-based feel. What's absent: lifetimes, type annotations on locals, inheritan
 
 *Resolved in the MVP-scoping review: MVP = typed-lite (tree-walker + exhaustiveness +
 null-narrowing, see [02-mvp-scope.md](02-mvp-scope.md)); function signatures fully
-annotated (params + `returns`); null-fallback is `x.or_else(y)`; `returns` keyword
-frees `->` for lambdas only.*
+annotated (params + `->` result type); null-fallback is `x.or_else(y)`. Resolved in
+M2 scoping: the `returns` keyword is dropped — the single `->` arrow types lambdas,
+function types, and declaration return types alike.*

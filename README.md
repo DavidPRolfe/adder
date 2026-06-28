@@ -25,7 +25,7 @@ enum Expr:
     Mul(Expr, Expr)
     Div(Expr, Expr)
 
-fn eval(e: Expr) returns Float:
+fn eval(e: Expr) -> Float:
     return match e:
         .Num(n):    n
         .Add(a, b): eval(a) + eval(b)
@@ -71,15 +71,15 @@ This reflects the current M1 surface syntax. The authority is
 [`spec/03-mvp-grammar.md`](spec/03-mvp-grammar.md); the scope (what's in vs.
 deferred) is [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md).
 
-**Functions** have fully annotated signatures (parameter types plus a `returns`
-clause; omit `returns` for no result). The body returns its final expression
+**Functions** have fully annotated signatures (parameter types plus an `->` result
+clause; omit the `->` for no result). The body returns its final expression
 implicitly, or via an explicit `return`.
 
 ```adder
-fn double(n: Int) returns Int:
+fn double(n: Int) -> Int:
     n * 2                       # implicit final-expression return
 
-fn greet(name: String):        # no returns clause = unit result
+fn greet(name: String):        # no -> clause = unit result
     print("hello {name}")
 ```
 
@@ -105,7 +105,7 @@ enum Shape:
     Rect(w: Float, h: Float)
     Unit                        # niladic variant
 
-fn area(s: Shape) returns Float:
+fn area(s: Shape) -> Float:
     return match s:
         .Circle(r):  3.14159 * r * r
         .Rect(w, h): w * h
@@ -124,7 +124,7 @@ struct Rectangle:
     height: Float
 
 impl Rectangle:
-    fn area(self) returns Float:
+    fn area(self) -> Float:
         return self.width * self.height
 
     fn grow(self, factor: Float):           # mutates self in place
@@ -140,7 +140,7 @@ where a `T` is required and you get a compile-time error unless you narrow it
 (`if x is not null:`) or default it (`x.or_else(default)`).
 
 ```adder
-fn add_one(x: Int?) returns Int:
+fn add_one(x: Int?) -> Int:
     if x is not null:
         return x + 1            # x is narrowed to Int here
     return 0

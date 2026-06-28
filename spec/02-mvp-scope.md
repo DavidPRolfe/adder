@@ -54,7 +54,7 @@ inference, and broader static type checking, are a later milestone.
 
 **Functions**
 - `fn` with positional parameters; **fully annotated signatures** (param types +
-  `returns` clause; omit `returns` for no result).
+  `->` result clause; omit the `->` for no result).
 - Explicit `return` and implicit final-expression return.
 
 **Structs**
@@ -120,7 +120,7 @@ enum Expr:
     Mul(Expr, Expr)
     Div(Expr, Expr)
 
-fn eval(e: Expr) returns Float:
+fn eval(e: Expr) -> Float:
     return match e:
         .Num(n):    n
         .Add(a, b): eval(a) + eval(b)
@@ -138,7 +138,7 @@ fn main():
 ```
 
 This program exercises: indentation syntax, enums with data, an exhaustive `match`
-expression, recursion, `fn` signatures with `returns`, `val`, `panic`, and string
+expression, recursion, `fn` signatures with an `->` result, `val`, `panic`, and string
 interpolation — the whole MVP feel in ~20 lines, with both static checks active
 (exhaustiveness over `Expr`, and no nulls to mishandle here).
 
