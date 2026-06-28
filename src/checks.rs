@@ -27,8 +27,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Arg, BinOp, Binding, EnumDecl, Expr, ExprKind, FnDecl, IfStmt, ImplDecl, Param,
-    PatternKind, Payload, Program, Stmt, StmtKind, Type, BaseType, MatchExpr,
+    Arg, BaseType, BinOp, Binder, Binding, EnumDecl, Expr, ExprKind, FnDecl, IfStmt, ImplDecl,
+    MatchExpr, Param, PatternKind, Payload, Program, Stmt, StmtKind, Type,
 };
 use crate::error::Diagnostic;
 use crate::token::Span;
@@ -199,8 +199,19 @@ impl<'a> Exhaustiveness<'a> {
             StmtKind::Binding(b) => {
                 // Visit the initializer first (it may contain matches).
                 self.check_expr(&b.value, scope);
-                let ty = self.resolve_binding_ty(b, scope);
-                scope.insert(b.name.clone(), ty);
+                match &b.binder {
+                    // A single-name binding may resolve to an enum type.
+                    Binder::Name(name) => {
+                        let ty = self.resolve_binding_ty(b, scope);
+                        scope.insert(name.clone(), ty);
+                    }
+                    // A tuple destructure binds several names of unknown type.
+                    Binder::Tuple(names) => {
+                        for n in names {
+                            scope.insert(n.clone(), ResolvedTy::Unknown);
+                        }
+                    }
+                }
             }
             StmtKind::Assign(a) => {
                 self.check_expr(&a.value, scope);
@@ -234,8 +245,10 @@ impl<'a> Exhaustiveness<'a> {
             StmtKind::For(fr) => {
                 self.check_expr(&fr.iter, scope);
                 let mut inner = scope.clone();
-                // The loop var's type is unknown to this lightweight pass.
-                inner.insert(fr.var.clone(), ResolvedTy::Unknown);
+                // The loop binder's name(s) are of unknown type to this pass.
+                for n in binder_names(&fr.binder) {
+                    inner.insert(n.clone(), ResolvedTy::Unknown);
+                }
                 self.check_stmts(&fr.body.stmts, &mut inner);
             }
 
@@ -549,8 +562,19 @@ impl<'a> NullNarrowing<'a> {
                 // the RHS doesn't "require T", so don't flag plain references.
                 // But nested uses inside it (e.g. `x.f`) should be checked.
                 self.check_expr_uses(&b.value, scope);
-                let state = self.binding_null_state(b, scope);
-                scope.insert(b.name.clone(), state);
+                match &b.binder {
+                    Binder::Name(name) => {
+                        let state = self.binding_null_state(b, scope);
+                        scope.insert(name.clone(), state);
+                    }
+                    // Destructured names have no tracked nullability (a tuple
+                    // binder carries no annotation); treat each as unknown.
+                    Binder::Tuple(names) => {
+                        for n in names {
+                            scope.insert(n.clone(), NullState::Unknown);
+                        }
+                    }
+                }
             }
             StmtKind::Assign(a) => {
                 self.check_expr_uses(&a.value, scope);
@@ -583,7 +607,9 @@ impl<'a> NullNarrowing<'a> {
             StmtKind::For(fr) => {
                 self.check_expr_uses(&fr.iter, scope);
                 let mut inner = scope.clone();
-                inner.insert(fr.var.clone(), NullState::Unknown);
+                for n in binder_names(&fr.binder) {
+                    inner.insert(n.clone(), NullState::Unknown);
+                }
                 self.check_stmts(&fr.body.stmts, &mut inner);
             }
 
@@ -813,6 +839,15 @@ impl<'a> NullNarrowing<'a> {
                 ));
             }
         }
+    }
+}
+
+/// The name(s) a [`Binder`] introduces — one for a single name, several for a
+/// tuple destructure. Used to seed loop-binder scoping in both static passes.
+fn binder_names(binder: &Binder) -> Vec<&String> {
+    match binder {
+        Binder::Name(n) => vec![n],
+        Binder::Tuple(names) => names.iter().collect(),
     }
 }
 

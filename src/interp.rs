@@ -406,25 +406,35 @@ impl Interp {
         match &stmt.kind {
             StmtKind::Binding(b) => {
                 let v = self.eval(&b.value, env)?;
-                if !b.is_val && b.ty.is_none() {
-                    // Bare `x = e` (grammar §4.1): reassign if the name already
-                    // resolves in an accessible scope, otherwise introduce it
-                    // here. A bare-name reassignment is parsed as a `Binding`,
-                    // not an `Assign`, so the `val`-immutability and
-                    // cross-scope mutation rules must be enforced on this path.
-                    match env_assign(env, &b.name, v.clone()) {
-                        Ok(true) => {}
-                        Ok(false) => env_define(env, &b.name, v, false),
-                        Err(()) => {
-                            return Err(Diagnostic::runtime(
-                                format!("cannot reassign `val` binding `{}`", b.name),
-                                stmt.span,
-                            ));
+                match &b.binder {
+                    // A tuple destructure `val (a, b) = e` always declares fresh
+                    // names in this scope (never a bare-name reassignment).
+                    crate::ast::Binder::Tuple(names) => {
+                        destructure_tuple(names, v, env, stmt.span)?;
+                    }
+                    crate::ast::Binder::Name(name) => {
+                        if !b.is_val && b.ty.is_none() {
+                            // Bare `x = e` (grammar §4.1): reassign if the name
+                            // already resolves in an accessible scope, otherwise
+                            // introduce it here. A bare-name reassignment is
+                            // parsed as a `Binding`, not an `Assign`, so the
+                            // `val`-immutability and cross-scope mutation rules
+                            // must be enforced on this path.
+                            match env_assign(env, name, v.clone()) {
+                                Ok(true) => {}
+                                Ok(false) => env_define(env, name, v, false),
+                                Err(()) => {
+                                    return Err(Diagnostic::runtime(
+                                        format!("cannot reassign `val` binding `{}`", name),
+                                        stmt.span,
+                                    ));
+                                }
+                            }
+                        } else {
+                            // `val x = e` or typed `x: T = e`: a declaration here.
+                            env_define(env, name, v, b.is_val);
                         }
                     }
-                } else {
-                    // `val x = e` or typed `x: T = e`: a declaration in this scope.
-                    env_define(env, &b.name, v, b.is_val);
                 }
                 Ok(Flow::Normal(Value::Unit))
             }
@@ -512,9 +522,15 @@ impl Interp {
         let iter_val = self.eval(&s.iter, env)?;
         let items = self.iterable_items(&iter_val, s.iter.span)?;
         for item in items {
-            // Each iteration gets a fresh scope holding the loop variable.
+            // Each iteration gets a fresh scope holding the loop variable(s).
             let scope = Scope::child(env);
-            env_define(&scope, &s.var, item, false);
+            match &s.binder {
+                crate::ast::Binder::Name(name) => env_define(&scope, name, item, false),
+                // `for (k, v) in …` destructures each element as a tuple.
+                crate::ast::Binder::Tuple(names) => {
+                    destructure_tuple(names, item, &scope, s.iter.span)?;
+                }
+            }
             match self.exec_stmts(&s.body.stmts, &scope)? {
                 Flow::Normal(_) => {}
                 Flow::Continue => continue,
@@ -759,23 +775,106 @@ impl Interp {
             }
             ExprKind::Match(m) => self.eval_match(m, expr.span, env),
             // ----- M2 collections / comprehensions (Wave 1) -----
-            // TODO(W1-B): evaluate these into Value::{Map,Set,Tuple}/List.
-            ExprKind::Map(_) => Err(Diagnostic::runtime(
-                "map literals are not yet implemented (M2 Wave 1)".to_string(),
-                expr.span,
-            )),
-            ExprKind::Set(_) => Err(Diagnostic::runtime(
-                "set literals are not yet implemented (M2 Wave 1)".to_string(),
-                expr.span,
-            )),
-            ExprKind::Tuple(_) => Err(Diagnostic::runtime(
-                "tuple literals are not yet implemented (M2 Wave 1)".to_string(),
-                expr.span,
-            )),
-            ExprKind::Comprehension(_) => Err(Diagnostic::runtime(
-                "comprehensions are not yet implemented (M2 Wave 1)".to_string(),
-                expr.span,
-            )),
+            ExprKind::Map(pairs) => {
+                let mut entries: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
+                for (k_expr, v_expr) in pairs {
+                    let k = self.eval(k_expr, env)?;
+                    let v = self.eval(v_expr, env)?;
+                    map_insert(&mut entries, k, v);
+                }
+                Ok(Value::Map(Rc::new(RefCell::new(entries))))
+            }
+            ExprKind::Set(items) => {
+                let mut elems: Vec<Value> = Vec::with_capacity(items.len());
+                for e in items {
+                    let v = self.eval(e, env)?;
+                    set_insert(&mut elems, v);
+                }
+                Ok(Value::Set(Rc::new(RefCell::new(elems))))
+            }
+            ExprKind::Tuple(items) => {
+                let mut vals = Vec::with_capacity(items.len());
+                for e in items {
+                    vals.push(self.eval(e, env)?);
+                }
+                Ok(Value::Tuple(Rc::new(vals)))
+            }
+            ExprKind::Comprehension(c) => self.eval_comprehension(c, expr.span, env),
+        }
+    }
+
+    /// Evaluate a comprehension by desugaring to a loop over `iter`: bind the
+    /// binder to each element, apply the optional `if` filter (which must be
+    /// `Bool` — no truthiness), and collect per the output kind into a `List`,
+    /// `Set`, or `Map`. The binder is scoped to each iteration.
+    fn eval_comprehension(
+        &mut self,
+        c: &crate::ast::Comprehension,
+        span: Span,
+        env: &Env,
+    ) -> EvalResult {
+        let iter_val = self.eval(&c.iter, env)?;
+        let items = self.iterable_items(&iter_val, c.iter.span)?;
+
+        let mut list_out: Vec<Value> = Vec::new();
+        let mut set_out: Vec<Value> = Vec::new();
+        let mut map_out: Vec<(Value, Value)> = Vec::new();
+
+        for item in items {
+            let scope = Scope::child(env);
+            self.bind_binder(&c.binder, item, &scope, span)?;
+            if let Some(cond) = &c.cond {
+                if !self.eval_bool_cond(cond, &scope)? {
+                    continue;
+                }
+            }
+            match &c.output {
+                crate::ast::ComprehensionOutput::List(e) => {
+                    list_out.push(self.eval(e, &scope)?);
+                }
+                crate::ast::ComprehensionOutput::Set(e) => {
+                    let v = self.eval(e, &scope)?;
+                    set_insert(&mut set_out, v);
+                }
+                crate::ast::ComprehensionOutput::Map { key, value } => {
+                    let k = self.eval(key, &scope)?;
+                    let v = self.eval(value, &scope)?;
+                    map_insert(&mut map_out, k, v);
+                }
+            }
+        }
+
+        Ok(match &c.output {
+            crate::ast::ComprehensionOutput::List(_) => {
+                Value::List(Rc::new(RefCell::new(list_out)))
+            }
+            crate::ast::ComprehensionOutput::Set(_) => {
+                Value::Set(Rc::new(RefCell::new(set_out)))
+            }
+            crate::ast::ComprehensionOutput::Map { .. } => {
+                Value::Map(Rc::new(RefCell::new(map_out)))
+            }
+        })
+    }
+
+    /// Bind a [`ComprehensionBinder`] to an iterated element in `scope`. A single
+    /// name binds the whole element; a tuple binder destructures a `Value::Tuple`
+    /// of matching arity (a non-tuple or mismatched arity is a runtime error).
+    fn bind_binder(
+        &self,
+        binder: &crate::ast::ComprehensionBinder,
+        value: Value,
+        scope: &Env,
+        span: Span,
+    ) -> Result<(), Diagnostic> {
+        match binder {
+            crate::ast::ComprehensionBinder::Name(n) => {
+                env_define(scope, n, value, false);
+                Ok(())
+            }
+            crate::ast::ComprehensionBinder::Tuple(names) => {
+                destructure_tuple(names, value, scope, span)
+            }
         }
     }
 
@@ -1142,6 +1241,24 @@ impl Interp {
 
         // Otherwise: an ordinary function/closure/builtin call.
         let callee_v = self.eval(callee, env)?;
+        // A named `fn` supports named call args and default values (M2 Wave 1);
+        // bind directly from the raw `Arg`s so names/defaults are honoured.
+        if let Value::Closure(c) = &callee_v {
+            if let ClosureKind::Function(f) = &c.kind {
+                let f = Rc::clone(f);
+                let c = Rc::clone(c);
+                let call_scope = Scope::child(&c.env);
+                self.bind_call(&f.params, args, &call_scope, &f.name, span, env)?;
+                return match self.exec_stmts(&f.body.stmts, &call_scope)? {
+                    Flow::Normal(v) | Flow::Return(v) => Ok(v),
+                    Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
+                        "`break`/`continue` outside a loop".to_string(),
+                        span,
+                    )),
+                };
+            }
+        }
+        // Lambdas / builtins take positional args only (no names/defaults).
         let arg_vals = self.eval_positional_args(args, span, env)?;
         self.apply(callee_v, arg_vals, span)
     }
@@ -1220,36 +1337,146 @@ impl Interp {
         }
     }
 
-    /// Bind positional params (handling a leading `self` if `self_val` already
-    /// placed in scope). Here params do not include a pre-bound self.
+    /// Bind already-evaluated **positional** args to params (the `self` receiver,
+    /// if any, is pre-bound by the caller). Trailing params that have a default
+    /// value (M2 Wave 1) may be omitted; their defaults are evaluated in `scope`.
+    /// Used by the value-call path (`apply` — lambdas-as-functions, `main`).
     fn bind_params(
-        &self,
+        &mut self,
         params: &[Param],
         args: &[Value],
         scope: &Env,
         fn_name: &str,
         span: Span,
     ) -> Result<(), Diagnostic> {
-        // Count non-self params.
-        let named: Vec<&Param> = params
+        // Non-self params, in declaration order.
+        let positional: Vec<&Param> = params
             .iter()
             .filter(|p| !matches!(p, Param::SelfRecv))
             .collect();
-        if named.len() != args.len() {
-            return Err(Diagnostic::runtime(
-                format!(
-                    "`{}` expects {} argument(s), got {}",
-                    fn_name,
-                    named.len(),
-                    args.len()
-                ),
+        let required = positional
+            .iter()
+            .take_while(|p| matches!(p, Param::Named { default: None, .. }))
+            .count();
+        if args.len() < required || args.len() > positional.len() {
+            return Err(arity_error(fn_name, required, positional.len(), args.len(), span));
+        }
+        for (i, p) in positional.iter().enumerate() {
+            if let Param::Named { name, default, .. } = p {
+                let v = match args.get(i) {
+                    Some(v) => v.clone(),
+                    None => match default {
+                        Some(e) => self.eval(e, scope)?,
+                        None => {
+                            return Err(arity_error(
+                                fn_name, required, positional.len(), args.len(), span,
+                            ));
+                        }
+                    },
+                };
+                env_define(scope, name, v, false);
+            }
+        }
+        Ok(())
+    }
+
+    /// Bind a function/method call's raw [`Arg`]s to `params`, honouring
+    /// **named arguments** and **default values** (M2 Wave 1). Positional args
+    /// fill params left-to-right; named args match by parameter name; any param
+    /// left unfilled uses its default or is an arity/missing-argument error.
+    /// Args are evaluated in `caller_env`; defaults in the new `scope`.
+    fn bind_call(
+        &mut self,
+        params: &[Param],
+        args: &[Arg],
+        scope: &Env,
+        fn_name: &str,
+        span: Span,
+        caller_env: &Env,
+    ) -> Result<(), Diagnostic> {
+        let positional_params: Vec<&Param> = params
+            .iter()
+            .filter(|p| !matches!(p, Param::SelfRecv))
+            .collect();
+
+        // Split call args into positional values and a name → value map. A named
+        // arg may not be followed by a positional one (keeps the mapping clear).
+        let mut pos_vals: Vec<Value> = Vec::new();
+        let mut named_vals: HashMap<String, Value> = HashMap::new();
+        let mut seen_named = false;
+        for a in args {
+            match a {
+                Arg::Positional(e) => {
+                    if seen_named {
+                        return Err(Diagnostic::runtime(
+                            format!(
+                                "`{}`: positional argument after a named argument",
+                                fn_name
+                            ),
+                            span,
+                        ));
+                    }
+                    pos_vals.push(self.eval(e, caller_env)?);
+                }
+                Arg::Named { name, value } => {
+                    seen_named = true;
+                    if named_vals.contains_key(name) {
+                        return Err(Diagnostic::runtime(
+                            format!("`{}`: duplicate argument `{}`", fn_name, name),
+                            span,
+                        ));
+                    }
+                    named_vals.insert(name.clone(), self.eval(value, caller_env)?);
+                }
+            }
+        }
+
+        if pos_vals.len() > positional_params.len() {
+            return Err(arity_error(
+                fn_name,
+                required_count(&positional_params),
+                positional_params.len(),
+                pos_vals.len(),
                 span,
             ));
         }
-        for (p, v) in named.iter().zip(args.iter()) {
-            if let Param::Named { name, .. } = p {
-                env_define(scope, name, v.clone(), false);
+
+        // Bind each param: a positional value (by position), else a named value
+        // (by name), else its default, else an error.
+        let mut pos_iter = pos_vals.into_iter();
+        for p in &positional_params {
+            if let Param::Named { name, default, .. } = p {
+                let v = if let Some(v) = pos_iter.next() {
+                    if named_vals.contains_key(name) {
+                        return Err(Diagnostic::runtime(
+                            format!(
+                                "`{}`: argument `{}` given both positionally and by name",
+                                fn_name, name
+                            ),
+                            span,
+                        ));
+                    }
+                    v
+                } else if let Some(v) = named_vals.remove(name) {
+                    v
+                } else if let Some(e) = default {
+                    self.eval(e, scope)?
+                } else {
+                    return Err(Diagnostic::runtime(
+                        format!("`{}`: missing argument `{}`", fn_name, name),
+                        span,
+                    ));
+                };
+                env_define(scope, name, v, false);
             }
+        }
+
+        // Any leftover named args don't correspond to a parameter.
+        if let Some(extra) = named_vals.keys().next() {
+            return Err(Diagnostic::runtime(
+                format!("`{}` has no parameter named `{}`", fn_name, extra),
+                span,
+            ));
         }
         Ok(())
     }
@@ -1305,15 +1532,14 @@ impl Interp {
                 )
             })?;
 
-        let arg_vals = self.eval_positional_args(args, span, env)?;
-
         // Method scope is a child of the *global* root env (captured via the
         // env chain). Methods resolve other top-level names through the call
         // env's root; we use the call-site env's chain root so globals (other
-        // fns) are visible. Bind `self` first.
+        // fns) are visible. Bind `self` first, then params (named args + default
+        // values honoured, M2 Wave 1).
         let method_scope = Scope::child(&root_of(env));
         env_define(&method_scope, "self", recv, false);
-        self.bind_params(&method.params, &arg_vals, &method_scope, &method.name, span)?;
+        self.bind_call(&method.params, args, &method_scope, &method.name, span, env)?;
 
         match self.exec_stmts(&method.body.stmts, &method_scope)? {
             Flow::Normal(v) => Ok(v),
@@ -1640,6 +1866,81 @@ impl Interp {
 // Free helpers (no &self)
 // ===========================================================================
 
+/// The number of leading required (no-default) params among a positional param
+/// list. Defaults are only honoured when *trailing*, matching the surface rule.
+fn required_count(positional: &[&Param]) -> usize {
+    positional
+        .iter()
+        .take_while(|p| matches!(p, Param::Named { default: None, .. }))
+        .count()
+}
+
+/// Build a uniform arity-mismatch diagnostic. When `min == max` the count is
+/// exact; otherwise it reads as a range (some params have defaults).
+fn arity_error(fn_name: &str, min: usize, max: usize, got: usize, span: Span) -> Diagnostic {
+    let expects = if min == max {
+        format!("{}", max)
+    } else {
+        format!("{} to {}", min, max)
+    };
+    Diagnostic::runtime(
+        format!("`{}` expects {} argument(s), got {}", fn_name, expects, got),
+        span,
+    )
+}
+
+/// Insert a key/value into an insertion-ordered map vector, deduplicating by
+/// structural key equality (a re-inserted key overwrites its value in place,
+/// preserving first-seen order). Mirrors the `Map` literal / comprehension rule.
+fn map_insert(entries: &mut Vec<(Value, Value)>, key: Value, value: Value) {
+    if let Some(slot) = entries.iter_mut().find(|(k, _)| values_equal(k, &key)) {
+        slot.1 = value;
+    } else {
+        entries.push((key, value));
+    }
+}
+
+/// Insert an element into an insertion-ordered set vector, deduplicating by
+/// structural equality (a duplicate is dropped, keeping the first occurrence).
+fn set_insert(elems: &mut Vec<Value>, value: Value) {
+    if !elems.iter().any(|e| values_equal(e, &value)) {
+        elems.push(value);
+    }
+}
+
+/// Destructure a [`Value::Tuple`] into `names` (matching arity), binding each
+/// element into `scope`. A non-tuple value or an arity mismatch is a runtime
+/// error. Shared by tuple binders in `val`, `for`, and comprehensions.
+fn destructure_tuple(
+    names: &[String],
+    value: Value,
+    scope: &Env,
+    span: Span,
+) -> Result<(), Diagnostic> {
+    match value {
+        Value::Tuple(items) => {
+            if items.len() != names.len() {
+                return Err(Diagnostic::runtime(
+                    format!(
+                        "cannot destructure a {}-tuple into {} name(s)",
+                        items.len(),
+                        names.len()
+                    ),
+                    span,
+                ));
+            }
+            for (n, v) in names.iter().zip(items.iter()) {
+                env_define(scope, n, v.clone(), false);
+            }
+            Ok(())
+        }
+        other => Err(Diagnostic::runtime(
+            format!("cannot destructure {} as a tuple", type_name(&other)),
+            span,
+        )),
+    }
+}
+
 /// The root (outermost) env of a chain — used so methods see top-level names.
 fn root_of(env: &Env) -> Env {
     let parent = env.borrow().parent.clone();
@@ -1930,6 +2231,31 @@ mod tests {
         interp.eval(e, &root)
     }
 
+    /// Lex + parse + run a source program, then evaluate its **final**
+    /// expression statement, returning that value. Earlier statements run for
+    /// their effects (bindings, fn decls). Used by the M2 surface tests, which
+    /// are far clearer as source than as hand-built AST.
+    fn eval_src(src: &str) -> Value {
+        let toks = crate::lexer::lex(src).expect("source should lex");
+        let program = crate::parser::parse(&toks).expect("source should parse");
+        let (mut interp, root) = fresh();
+        interp.collect_decls(&program);
+        let (last, init) = program
+            .stmts
+            .split_last()
+            .expect("program should have at least one statement");
+        for stmt in init {
+            match interp.exec_stmt(stmt, &root) {
+                Ok(_) => {}
+                Err(d) => panic!("setup statement failed: {}", d.message),
+            }
+        }
+        match &last.kind {
+            StmtKind::Expr(e) => interp.eval(e, &root).expect("final expr should evaluate"),
+            other => panic!("expected a trailing expr statement, got {:?}", other),
+        }
+    }
+
     // ---- arithmetic -------------------------------------------------------
 
     #[test]
@@ -2096,6 +2422,7 @@ mod tests {
         // val x = 1 ; x = 2  -> runtime error on the reassignment.
         let bind = st(StmtKind::Binding(Binding {
             name: "x".to_string(),
+            binder: Binder::Name("x".to_string()),
             is_val: true,
             ty: None,
             value: int(1),
@@ -2114,6 +2441,7 @@ mod tests {
     fn mutable_reassignment_ok() {
         let bind = st(StmtKind::Binding(Binding {
             name: "x".to_string(),
+            binder: Binder::Name("x".to_string()),
             is_val: false,
             ty: None,
             value: int(1),
@@ -2138,12 +2466,14 @@ mod tests {
         // sum = 0 ; for x in 0..5: sum = sum + x   -> 0+1+2+3+4 = 10
         let init = st(StmtKind::Binding(Binding {
             name: "sum".to_string(),
+            binder: Binder::Name("sum".to_string()),
             is_val: false,
             ty: None,
             value: int(0),
         }));
         let for_stmt = st(StmtKind::For(ForStmt {
             var: "x".to_string(),
+            binder: Binder::Name("x".to_string()),
             iter: bin(BinOp::Range, int(0), int(5)),
             body: block(vec![st(StmtKind::Assign(Assign {
                 target: Target { base: "sum".to_string(), path: vec![], span: sp() },
@@ -2164,12 +2494,14 @@ mod tests {
         // for x in 0..=3 -> [0,1,2,3], sum 6
         let init = st(StmtKind::Binding(Binding {
             name: "sum".to_string(),
+            binder: Binder::Name("sum".to_string()),
             is_val: false,
             ty: None,
             value: int(0),
         }));
         let for_stmt = st(StmtKind::For(ForStmt {
             var: "x".to_string(),
+            binder: Binder::Name("x".to_string()),
             iter: bin(BinOp::RangeIncl, int(0), int(3)),
             body: block(vec![st(StmtKind::Assign(Assign {
                 target: Target { base: "sum".to_string(), path: vec![], span: sp() },
@@ -2361,6 +2693,7 @@ mod tests {
             returns: None,
             body: block(vec![st(StmtKind::Binding(Binding {
                 name: "x".to_string(),
+                binder: Binder::Name("x".to_string()),
                 is_val: false,
                 ty: None,
                 value: int(1),
@@ -2552,6 +2885,7 @@ mod tests {
                     body: block(vec![
                         st(StmtKind::Binding(Binding {
                             name: "divisor".to_string(),
+                            binder: Binder::Name("divisor".to_string()),
                             is_val: false,
                             ty: None,
                             value: call(name("eval"), vec![name("b")]),
@@ -2703,6 +3037,7 @@ mod tests {
                     body: block(vec![
                         st(StmtKind::Binding(Binding {
                             name: "divisor".to_string(),
+                            binder: Binder::Name("divisor".to_string()),
                             is_val: false,
                             ty: None,
                             value: call(name("eval"), vec![name("b")]),
@@ -2769,5 +3104,166 @@ mod tests {
         let r = interp.eval(&div_zero, &root);
         assert!(r.is_err());
         assert!(r.unwrap_err().message.contains("division by zero"));
+    }
+
+    // =====================================================================
+    // M2 Wave 1-B — collections, comprehensions, tuples, default/named args.
+    // Asserted on structure / scalars (not Map/Set `Show`, which W1-A owns).
+    // =====================================================================
+
+    /// Collect a `Value::List`'s elements, or panic.
+    fn list_vals(v: Value) -> Vec<Value> {
+        match v {
+            Value::List(items) => items.borrow().clone(),
+            other => panic!("expected List, got {:?}", other),
+        }
+    }
+
+    fn as_int(v: &Value) -> i64 {
+        match v {
+            Value::Int(n) => n.to_i64().expect("fits i64"),
+            other => panic!("expected Int, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tuple_literal_and_eq() {
+        // (1, 2) == (1, 2)
+        match eval_src("val t = (1, 2)\nt == (1, 2)\n") {
+            Value::Bool(b) => assert!(b),
+            v => panic!("expected Bool, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn set_literal_dedups() {
+        // A set literal drops structural duplicates; collect its len via a list.
+        match eval_src("val s = {1, 2, 2, 3, 1}\ns\n") {
+            Value::Set(items) => assert_eq!(items.borrow().len(), 3),
+            v => panic!("expected Set, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn map_literal_dedups_last_wins() {
+        // A repeated key keeps first-seen position but the latest value.
+        match eval_src("val m = {1: 10, 1: 20}\nm\n") {
+            Value::Map(pairs) => {
+                let p = pairs.borrow();
+                assert_eq!(p.len(), 1);
+                assert_eq!(as_int(&p[0].1), 20);
+            }
+            v => panic!("expected Map, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn list_comprehension_runs() {
+        // [x * x for x in 1..=5 if x != 3] == [1, 4, 16, 25]
+        let xs = list_vals(eval_src("[x * x for x in 1..=5 if x != 3]\n"));
+        let got: Vec<i64> = xs.iter().map(as_int).collect();
+        assert_eq!(got, vec![1, 4, 16, 25]);
+    }
+
+    #[test]
+    fn set_comprehension_dedups() {
+        match eval_src("{x % 3 for x in 0..9}\n") {
+            Value::Set(items) => assert_eq!(items.borrow().len(), 3), // {0, 1, 2}
+            v => panic!("expected Set, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn comprehension_over_tuple_list_destructures() {
+        // Iterate a list of tuples, destructuring each into (a, b); sum a + b.
+        let xs = list_vals(eval_src("[a + b for (a, b) in [(1, 2), (3, 4)]]\n"));
+        let got: Vec<i64> = xs.iter().map(as_int).collect();
+        assert_eq!(got, vec![3, 7]);
+    }
+
+    #[test]
+    fn comprehension_filter_must_be_bool() {
+        // A non-Bool filter is a runtime error (no truthiness).
+        let toks = crate::lexer::lex("[x for x in 0..3 if x]\n").unwrap();
+        let program = crate::parser::parse(&toks).unwrap();
+        let (mut interp, root) = fresh();
+        interp.collect_decls(&program);
+        let last = &program.stmts[program.stmts.len() - 1];
+        if let StmtKind::Expr(e) = &last.kind {
+            assert!(interp.eval(e, &root).is_err());
+        } else {
+            panic!("expected expr statement");
+        }
+    }
+
+    #[test]
+    fn val_tuple_destructure_binds_names() {
+        // val (a, b) = (7, 9) ; a + b == 16
+        assert_eq!(as_int(&eval_src("val (a, b) = (7, 9)\na + b\n")), 16);
+    }
+
+    #[test]
+    fn for_tuple_destructure_sums() {
+        // for (a, b) in [(1,2),(3,4)]: total = total + a + b  -> 10
+        let src = "total = 0\nfor (a, b) in [(1, 2), (3, 4)]:\n    total = total + a + b\ntotal\n";
+        assert_eq!(as_int(&eval_src(src)), 10);
+    }
+
+    #[test]
+    fn default_arg_used_when_omitted() {
+        // fn add(a: Int, b: Int = 10) -> Int: a + b ; add(5) == 15
+        let src = "fn add(a: Int, b: Int = 10) -> Int:\n    a + b\nadd(5)\n";
+        assert_eq!(as_int(&eval_src(src)), 15);
+    }
+
+    #[test]
+    fn default_arg_overridden_positionally() {
+        let src = "fn add(a: Int, b: Int = 10) -> Int:\n    a + b\nadd(5, 100)\n";
+        assert_eq!(as_int(&eval_src(src)), 105);
+    }
+
+    #[test]
+    fn named_call_arg_binds_by_name() {
+        // greeting passed by name; result is its concatenation.
+        let src = "fn greet(name: String, greeting: String = \"Hi\") -> String:\n    greeting + name\ngreet(\"Ada\", greeting: \"Hello \")\n";
+        match eval_src(src) {
+            Value::Str(s) => assert_eq!(s, "Hello Ada"),
+            v => panic!("expected String, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn lambda_passed_to_function_typed_param() {
+        // A lambda flows into a function-typed param and is called.
+        let src = "fn apply(f: (Int) -> Int, x: Int) -> Int:\n    f(x)\napply(n -> n * n, 6)\n";
+        assert_eq!(as_int(&eval_src(src)), 36);
+    }
+
+    #[test]
+    fn missing_required_arg_errors() {
+        // fn f(a: Int): a ; f() -> arity error.
+        let toks = crate::lexer::lex("fn f(a: Int) -> Int:\n    a\nf()\n").unwrap();
+        let program = crate::parser::parse(&toks).unwrap();
+        let (mut interp, root) = fresh();
+        interp.collect_decls(&program);
+        let mut err = None;
+        for stmt in &program.stmts {
+            if let Err(d) = interp.exec_stmt(stmt, &root) {
+                err = Some(d);
+                break;
+            }
+        }
+        assert!(err.is_some(), "expected an arity error");
+    }
+
+    #[test]
+    fn tuple_destructure_arity_mismatch_errors() {
+        // val (a, b) = (1, 2, 3) -> runtime error.
+        let toks = crate::lexer::lex("val (a, b) = (1, 2, 3)\n").unwrap();
+        let program = crate::parser::parse(&toks).unwrap();
+        let (mut interp, root) = fresh();
+        interp.collect_decls(&program);
+        let r = interp.exec_stmt(&program.stmts[0], &root);
+        assert!(r.is_err());
     }
 }
