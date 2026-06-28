@@ -90,15 +90,34 @@ pub enum StrPart {
 ///
 /// Keywords (§1.3), literals (§1.4–§1.5), operators/punctuation (§1.6), and the
 /// synthetic layout tokens (§1.2) are all represented here.
+///
+/// `doc` carries a `##` doc comment (grammar §1.1) that appeared on the line(s)
+/// immediately above this token's logical line, with no blank or plain-`#` line
+/// in between. The lexer attaches it to the **first real token** of the logical
+/// line it precedes (never to a synthetic `Newline`/`Indent`/`Dedent`/`Eof`).
+/// The parser reads it off the leading token of a declaration (the `fn`/`struct`
+/// /`enum` keyword, or a field/variant name) to populate the AST's `doc` fields.
+/// A `##` above a non-declaration leaves a `doc` on some token that the parser
+/// simply ignores. It is **metadata only** and never affects how a program
+/// parses or runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
+    /// A captured `##` doc comment attached to this token, if any. Defaults to
+    /// `None` for every token the lexer emits unless a doc block precedes it.
+    pub doc: Option<String>,
 }
 
 impl Token {
+    /// Construct a token with no attached doc comment.
     pub fn new(kind: TokenKind, span: Span) -> Self {
-        Token { kind, span }
+        Token { kind, span, doc: None }
+    }
+
+    /// Construct a token with an attached `##` doc comment.
+    pub fn with_doc(kind: TokenKind, span: Span, doc: Option<String>) -> Self {
+        Token { kind, span, doc }
     }
 }
 

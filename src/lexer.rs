@@ -51,6 +51,13 @@ struct Lexer<'a> {
     /// expression's tokens followed by `Eof` (matching the `StrPart::Interp`
     /// contract in `token.rs`).
     inline: bool,
+    /// Accumulated `##` doc-comment text (grammar §1.1) for a run of consecutive
+    /// `##` comment-only lines. Lines are joined with `\n` (leading `##` and a
+    /// single following space already stripped). It is attached to the **first
+    /// real token** the lexer next emits (see [`Lexer::push`]) and is reset by a
+    /// blank line or a plain `#` comment line, which detach the doc from any
+    /// following declaration.
+    pending_doc: Option<String>,
     /// Output token stream.
     out: Vec<Token>,
 }
@@ -69,6 +76,7 @@ impl<'a> Lexer<'a> {
             indents: vec![0],
             bracket_depth: 0,
             inline: false,
+            pending_doc: None,
             out: Vec::new(),
         }
     }
@@ -124,7 +132,17 @@ impl<'a> Lexer<'a> {
     }
 
     fn push(&mut self, kind: TokenKind, span: Span) {
-        self.out.push(Token::new(kind, span));
+        // Attach any pending `##` doc comment to the first *real* token after the
+        // doc block. Synthetic layout tokens (`Newline`/`Indent`/`Dedent`/`Eof`)
+        // never carry a doc — the doc belongs to the declaration's leading token
+        // (e.g. the `fn`/`struct`/`enum` keyword, or a field/variant name), which
+        // may be preceded by an `Indent` for an indented declaration.
+        let doc = if is_layout(&kind) {
+            None
+        } else {
+            self.pending_doc.take()
+        };
+        self.out.push(Token::with_doc(kind, span, doc));
     }
 
     // ------------------------------------------------------------------
@@ -215,13 +233,17 @@ impl<'a> Lexer<'a> {
                     self.bump();
                 }
                 Some('\n') => {
-                    // Blank line.
+                    // Blank line: detaches any pending doc from a following decl.
                     self.bump();
+                    self.pending_doc = None;
                     return Ok(IndentLine::Blank);
                 }
                 Some('#') => {
-                    // Comment-only line: consume to end of line.
-                    self.consume_comment();
+                    // Comment-only line. A `##` line accumulates into the pending
+                    // doc comment; a plain `#` line is an ordinary comment that
+                    // detaches any pending doc (it is no longer immediately above
+                    // the next declaration).
+                    self.consume_doc_or_comment();
                     // Consume the trailing newline (if any) so the next call
                     // starts on a fresh physical line.
                     if let Some('\n') = self.peek() {
@@ -230,7 +252,8 @@ impl<'a> Lexer<'a> {
                     return Ok(IndentLine::Blank);
                 }
                 None => {
-                    // EOF with only whitespace on the line.
+                    // EOF with only whitespace on the line: detaches pending doc.
+                    self.pending_doc = None;
                     return Ok(IndentLine::Blank);
                 }
                 Some(_) => {
@@ -334,6 +357,60 @@ impl<'a> Lexer<'a> {
                 break;
             }
             self.bump();
+        }
+    }
+
+    /// Consume a comment-only line, distinguishing a `##` doc comment from a
+    /// plain `#` comment (grammar §1.1). The cursor is on the leading `#`.
+    ///
+    /// - `## text` (two-or-more leading hashes): append `text` (with the leading
+    ///   `##` and a single following space stripped) to [`Lexer::pending_doc`],
+    ///   joining consecutive doc lines with `\n`. This doc is later attached to
+    ///   the first real token of the next logical line (see [`Lexer::push`]).
+    /// - `# text` (a single `#`): an ordinary comment. It is discarded *and*
+    ///   detaches any pending doc — a plain comment between a `##` block and a
+    ///   declaration breaks the "immediately above" relationship.
+    ///
+    /// Either way the comment runs to (but does not consume) the newline. Doc
+    /// capture is suppressed in `inline` (interpolation) mode, where layout and
+    /// declarations are irrelevant; there it behaves like [`Self::consume_comment`].
+    fn consume_doc_or_comment(&mut self) {
+        debug_assert_eq!(self.peek(), Some('#'));
+        // A doc comment requires `##` and is meaningless inside an interpolation.
+        let is_doc = !self.inline && self.peek_n(1) == Some('#');
+        if !is_doc {
+            // Plain comment: discard and detach any pending doc.
+            self.consume_comment();
+            self.pending_doc = None;
+            return;
+        }
+
+        // Skip the two leading `#`s, then a single following space, then capture
+        // the rest of the line verbatim (other leading spaces are preserved).
+        self.bump(); // first '#'
+        self.bump(); // second '#'
+        if self.peek() == Some(' ') {
+            self.bump();
+        }
+        let mut text = String::new();
+        while let Some(c) = self.peek() {
+            if c == '\n' {
+                break;
+            }
+            // Tolerate CRLF: don't fold a trailing '\r' into the captured text.
+            if c == '\r' && self.peek_n(1) == Some('\n') {
+                break;
+            }
+            text.push(c);
+            self.bump();
+        }
+
+        match &mut self.pending_doc {
+            Some(existing) => {
+                existing.push('\n');
+                existing.push_str(&text);
+            }
+            None => self.pending_doc = Some(text),
         }
     }
 
@@ -777,6 +854,17 @@ enum IndentLine {
     Blank,
     /// A line bearing real tokens, with the given indentation width in spaces.
     Content(usize),
+}
+
+/// Whether `kind` is a synthetic layout/structural token (§1.2) rather than a
+/// "real" terminal. A `##` doc comment is never attached to a layout token — it
+/// belongs to the declaration's leading terminal, even when an `Indent` is
+/// emitted first for an indented declaration.
+fn is_layout(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
+    )
 }
 
 /// `id_start = unicode_letter | "_"`.
@@ -1252,6 +1340,112 @@ mod tests {
         use TokenKind::*;
         assert_eq!(kinds(""), vec![Eof]);
         assert_eq!(kinds("\n\n  \n"), vec![Eof]);
+    }
+
+    // ----- `##` doc-comment capture (§1.1) -------------------------------
+
+    /// Find the doc attached to the first token of the given kind.
+    fn doc_on(src: &str, want: &TokenKind) -> Option<String> {
+        let toks = lex(src).expect("expected successful lex");
+        toks.iter()
+            .find(|t| &t.kind == want)
+            .unwrap_or_else(|| panic!("no token {:?} in {:?}", want, src))
+            .doc
+            .clone()
+    }
+
+    #[test]
+    fn doc_attaches_to_following_fn() {
+        let doc = doc_on("## adds two numbers\nfn add():\n    1\n", &TokenKind::Fn);
+        assert_eq!(doc.as_deref(), Some("adds two numbers"));
+    }
+
+    #[test]
+    fn doc_strips_leading_hashes_and_one_space() {
+        // Exactly one leading space after `##` is stripped; further spaces stay.
+        let doc = doc_on("##  two spaces\nstruct S:\n    x: Int\n", &TokenKind::Struct);
+        assert_eq!(doc.as_deref(), Some(" two spaces"));
+        // No space at all after `##` is fine.
+        let doc2 = doc_on("##nospace\nstruct S:\n    x: Int\n", &TokenKind::Struct);
+        assert_eq!(doc2.as_deref(), Some("nospace"));
+    }
+
+    #[test]
+    fn multiple_doc_lines_join_with_newline() {
+        let doc = doc_on("## line one\n## line two\nenum E:\n    A\n", &TokenKind::Enum);
+        assert_eq!(doc.as_deref(), Some("line one\nline two"));
+    }
+
+    #[test]
+    fn blank_line_detaches_doc() {
+        let doc = doc_on("## orphaned\n\nfn f():\n    1\n", &TokenKind::Fn);
+        assert_eq!(doc, None);
+    }
+
+    #[test]
+    fn plain_comment_line_detaches_doc() {
+        // A `##` block followed by a plain `#` line is no longer "immediately
+        // above" the declaration, so it detaches.
+        let doc = doc_on("## doc\n# plain\nfn f():\n    1\n", &TokenKind::Fn);
+        assert_eq!(doc, None);
+    }
+
+    #[test]
+    fn plain_comment_is_not_a_doc() {
+        let doc = doc_on("# just a comment\nfn f():\n    1\n", &TokenKind::Fn);
+        assert_eq!(doc, None);
+    }
+
+    #[test]
+    fn doc_attaches_to_indented_decl_not_indent_token() {
+        // Inside an `impl`, the doc must land on the inner `fn`, never on the
+        // synthetic `Indent` emitted just before it.
+        let src = "impl Foo:\n    ## a method\n    fn bar(self):\n        1\n";
+        let toks = lex(src).expect("lex");
+        // No layout token carries a doc.
+        for t in &toks {
+            if matches!(
+                t.kind,
+                TokenKind::Newline | TokenKind::Indent | TokenKind::Dedent | TokenKind::Eof
+            ) {
+                assert_eq!(t.doc, None, "layout token must not carry a doc: {:?}", t);
+            }
+        }
+        let fn_doc = toks
+            .iter()
+            .find(|t| t.kind == TokenKind::Fn)
+            .unwrap()
+            .doc
+            .clone();
+        assert_eq!(fn_doc.as_deref(), Some("a method"));
+    }
+
+    #[test]
+    fn doc_above_non_declaration_lands_on_its_token() {
+        // A `##` above a plain statement attaches to that statement's leading
+        // token (the parser will simply ignore it). It must not leak to a later
+        // declaration on the next line.
+        let src = "## not a decl doc\nx = 1\nfn f():\n    1\n";
+        let toks = lex(src).expect("lex");
+        let x_doc = toks
+            .iter()
+            .find(|t| matches!(&t.kind, TokenKind::Name(n) if n == "x"))
+            .unwrap()
+            .doc
+            .clone();
+        assert_eq!(x_doc.as_deref(), Some("not a decl doc"));
+        // The `fn` after a real content line gets nothing.
+        let fn_doc = toks.iter().find(|t| t.kind == TokenKind::Fn).unwrap().doc.clone();
+        assert_eq!(fn_doc, None);
+    }
+
+    #[test]
+    fn doc_capture_does_not_perturb_layout() {
+        // The token stream (kinds only) with a doc block must be identical to the
+        // same program without it — docs are metadata, not structure.
+        let with_doc = kinds("## d1\n## d2\nfn f():\n    1\n");
+        let without = kinds("fn f():\n    1\n");
+        assert_eq!(with_doc, without);
     }
 
     #[test]

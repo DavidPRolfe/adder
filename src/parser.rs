@@ -72,6 +72,15 @@ impl<'a> Parser<'a> {
             .unwrap_or(&TokenKind::Eof)
     }
 
+    /// The `##` doc comment attached to the current token, if any (grammar
+    /// §1.1). The lexer attaches a doc block to the first real token of the
+    /// logical line it precedes, so a declaration's doc lives on its leading
+    /// token (the `fn`/`struct`/`enum` keyword, or a field/variant name). Read
+    /// this *before* advancing past that token.
+    fn cur_doc(&self) -> Option<String> {
+        self.tokens.get(self.pos).and_then(|t| t.doc.clone())
+    }
+
     /// The span of the current token (or a dummy span at the end of input,
     /// reusing the last real token's span so errors point somewhere sensible).
     fn cur_span(&self) -> Span {
@@ -608,6 +617,7 @@ impl<'a> Parser<'a> {
     /// `fn NAME "(" [param_list] ")" [returns type] ":" suite`.
     fn parse_fn_decl(&mut self) -> PResult<FnDecl> {
         let start = self.cur_span();
+        let doc = self.cur_doc();
         self.advance(); // `fn`
         let (name, _) = self.expect_name("a function name after `fn`")?;
         self.expect(&TokenKind::LParen, "`(` to open the parameter list")?;
@@ -624,7 +634,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Colon, "`:` before the function body")?;
         let body = self.parse_suite()?;
         let span = start.merge(body.span);
-        Ok(FnDecl { name, params, returns, body, doc: None, span })
+        Ok(FnDecl { name, params, returns, body, doc, span })
     }
 
     /// `param_list = param , …` ; `param = "self" | NAME ":" type`.
@@ -668,6 +678,7 @@ impl<'a> Parser<'a> {
     /// there is exactly one way to add a method.
     fn parse_struct(&mut self) -> PResult<Stmt> {
         let start = self.cur_span();
+        let doc = self.cur_doc();
         self.advance(); // `struct`
         let (name, _) = self.expect_name("a struct name")?;
         self.expect(&TokenKind::Colon, "`:` after the struct name")?;
@@ -685,12 +696,13 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Name(_) => {
                     let fstart = self.cur_span();
+                    let fdoc = self.cur_doc();
                     let (fname, _) = self.expect_name("a field name")?;
                     self.expect(&TokenKind::Colon, "`:` after the field name")?;
                     let ty = self.parse_type()?;
                     let span = fstart.merge(ty.span);
                     self.expect_stmt_newline()?;
-                    fields.push(FieldDecl { name: fname, ty, doc: None, span });
+                    fields.push(FieldDecl { name: fname, ty, doc: fdoc, span });
                 }
                 other => {
                     return Err(Diagnostic::parse(
@@ -705,7 +717,7 @@ impl<'a> Parser<'a> {
         self.expect(&TokenKind::Dedent, "end of the struct body")?;
         let span = start.merge(end);
         Ok(Stmt {
-            kind: StmtKind::Struct(StructDecl { name, fields, doc: None, span }),
+            kind: StmtKind::Struct(StructDecl { name, fields, doc, span }),
             span,
         })
     }
@@ -713,6 +725,7 @@ impl<'a> Parser<'a> {
     /// `enum NAME ":" NEWLINE INDENT variant_decl+ DEDENT`.
     fn parse_enum(&mut self) -> PResult<Stmt> {
         let start = self.cur_span();
+        let doc = self.cur_doc();
         self.advance(); // `enum`
         let (name, _) = self.expect_name("an enum name")?;
         self.expect(&TokenKind::Colon, "`:` after the enum name")?;
@@ -722,6 +735,7 @@ impl<'a> Parser<'a> {
         self.skip_newlines();
         while !matches!(self.peek(), TokenKind::Dedent | TokenKind::Eof) {
             let vstart = self.cur_span();
+            let vdoc = self.cur_doc();
             let (vname, vname_span) = self.expect_name("a variant name")?;
             let mut end = vname_span;
             let payload = if matches!(self.peek(), TokenKind::LParen) {
@@ -733,14 +747,14 @@ impl<'a> Parser<'a> {
             };
             self.expect_stmt_newline()?;
             let span = vstart.merge(end);
-            variants.push(VariantDecl { name: vname, payload, doc: None, span });
+            variants.push(VariantDecl { name: vname, payload, doc: vdoc, span });
             self.skip_newlines();
         }
         let end = self.cur_span();
         self.expect(&TokenKind::Dedent, "end of the enum body")?;
         let span = start.merge(end);
         Ok(Stmt {
-            kind: StmtKind::Enum(EnumDecl { name, variants, doc: None, span }),
+            kind: StmtKind::Enum(EnumDecl { name, variants, doc, span }),
             span,
         })
     }
@@ -2735,5 +2749,148 @@ mod tests {
             }
             other => panic!("expected while, got {:?}", other),
         }
+    }
+
+    // ----- `##` doc-comment attachment (§1.1) ----------------------------
+    //
+    // These go through the real lexer (the doc metadata originates there) and
+    // assert it lands on the right AST `doc` fields. The lexer is a sibling
+    // module in this crate, so calling it here is fine.
+
+    use crate::lexer::lex;
+
+    /// Lex + parse real source, asserting success.
+    fn parse_src(src: &str) -> Program {
+        let toks = lex(src).expect("source should lex");
+        match parse(&toks) {
+            Ok(p) => p,
+            Err(e) => panic!("expected parse success, got errors: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn doc_on_fn() {
+        let p = parse_src("## adds\nfn add():\n    1\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Fn(f) => assert_eq!(f.doc.as_deref(), Some("adds")),
+            other => panic!("expected fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn doc_on_struct_and_field() {
+        let p = parse_src(
+            "## a point\nstruct Point:\n    ## the x coordinate\n    x: Float\n    y: Float\n",
+        );
+        match &only_stmt(&p).kind {
+            StmtKind::Struct(s) => {
+                assert_eq!(s.doc.as_deref(), Some("a point"));
+                assert_eq!(s.fields[0].doc.as_deref(), Some("the x coordinate"));
+                // The undocumented field has no doc.
+                assert_eq!(s.fields[1].doc, None);
+            }
+            other => panic!("expected struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn doc_on_enum_and_variant() {
+        let p = parse_src("## a shape\nenum Shape:\n    ## a circle\n    Circle(Float)\n    Square\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Enum(e) => {
+                assert_eq!(e.doc.as_deref(), Some("a shape"));
+                assert_eq!(e.variants[0].doc.as_deref(), Some("a circle"));
+                assert_eq!(e.variants[1].doc, None);
+            }
+            other => panic!("expected enum, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn doc_on_multiline_joins() {
+        let p = parse_src("## line one\n## line two\nfn f():\n    1\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Fn(f) => assert_eq!(f.doc.as_deref(), Some("line one\nline two")),
+            other => panic!("expected fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn doc_on_impl_method() {
+        let p = parse_src("impl Point:\n    ## the magnitude\n    fn mag(self):\n        1\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Impl(i) => {
+                assert_eq!(i.methods.len(), 1);
+                assert_eq!(i.methods[0].doc.as_deref(), Some("the magnitude"));
+            }
+            other => panic!("expected impl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn blank_line_detaches_doc() {
+        let p = parse_src("## orphaned\n\nfn f():\n    1\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Fn(f) => assert_eq!(f.doc, None),
+            other => panic!("expected fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn plain_hash_is_not_a_doc() {
+        let p = parse_src("# just a comment\nfn f():\n    1\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Fn(f) => assert_eq!(f.doc, None),
+            other => panic!("expected fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn no_docs_parses_with_all_doc_fields_none() {
+        // Regression: a program with NO doc comments parses with every `doc`
+        // field `None` and nothing else perturbed.
+        let bare = parse_src(
+            "enum Expr:\n    Num(Float)\n    Add(Expr, Expr)\n\nfn eval(e: Expr) returns Float:\n    1\n",
+        );
+        assert_eq!(bare.stmts.len(), 2);
+        for stmt in &bare.stmts {
+            match &stmt.kind {
+                StmtKind::Enum(e) => {
+                    assert_eq!(e.doc, None);
+                    for v in &e.variants {
+                        assert_eq!(v.doc, None);
+                    }
+                }
+                StmtKind::Fn(f) => assert_eq!(f.doc, None),
+                other => panic!("unexpected stmt {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn doc_changes_only_the_doc_field() {
+        // Adding a doc to a decl must change *only* its `doc` field — the rest of
+        // the AST (down to spans) is unaffected when the decl sits at the same
+        // source offset. We arrange identical offsets by putting the doc on the
+        // *first* line in one program and a same-length plain `#` comment (which
+        // is discarded, not a doc) on the first line of the other, so the `fn`
+        // begins at the same byte/line in both.
+        let documented = parse_src("## docs!!\nfn f():\n    1\n");
+        let undocumented = parse_src("# docs!!!\nfn f():\n    1\n"); // same byte length line
+
+        let f_doc = match &only_stmt(&documented).kind {
+            StmtKind::Fn(f) => f.clone(),
+            other => panic!("expected fn, got {:?}", other),
+        };
+        let f_none = match &only_stmt(&undocumented).kind {
+            StmtKind::Fn(f) => f.clone(),
+            other => panic!("expected fn, got {:?}", other),
+        };
+
+        assert_eq!(f_doc.doc.as_deref(), Some("docs!!"));
+        assert_eq!(f_none.doc, None);
+        // Strip the docs and everything else (name, params, body, span) matches.
+        let stripped = FnDecl { doc: None, ..f_doc };
+        assert_eq!(stripped, f_none);
     }
 }
