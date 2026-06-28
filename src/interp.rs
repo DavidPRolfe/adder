@@ -2183,24 +2183,33 @@ impl Interp {
         let scrutinee = self.eval(&m.scrutinee, env)?;
         for arm in &m.arms {
             let arm_scope = Scope::child(env);
-            if self.try_match(&arm.pattern, &scrutinee, &arm_scope)? {
-                return match self.exec_stmts(&arm.body.stmts, &arm_scope)? {
-                    Flow::Normal(v) => Ok(v),
-                    Flow::Return(v) => {
-                        // A `return` inside a match arm propagates as a return.
-                        // But `eval` cannot carry a Flow; the surrounding fn
-                        // body handles return via statement evaluation. Since
-                        // match is an expression, treat the arm's `return` as
-                        // its value at expression level is wrong; instead we
-                        // surface it. In practice arms end in an expression.
-                        Ok(v)
-                    }
-                    Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
-                        "`break`/`continue` not allowed in a match arm".to_string(),
-                        arm.span,
-                    )),
-                };
+            if !self.try_match(&arm.pattern, &scrutinee, &arm_scope)? {
+                continue;
             }
+            // A guard (`pattern if cond:`) is evaluated in the arm scope, so it
+            // sees the pattern's bindings. It must be `Bool` (no truthiness); a
+            // false guard falls through to the next arm (M2 Wave 2).
+            if let Some(guard) = &arm.guard {
+                if !self.eval_bool_cond(guard, &arm_scope)? {
+                    continue;
+                }
+            }
+            return match self.exec_stmts(&arm.body.stmts, &arm_scope)? {
+                Flow::Normal(v) => Ok(v),
+                Flow::Return(v) => {
+                    // A `return` inside a match arm propagates as a return.
+                    // But `eval` cannot carry a Flow; the surrounding fn
+                    // body handles return via statement evaluation. Since
+                    // match is an expression, treat the arm's `return` as
+                    // its value at expression level is wrong; instead we
+                    // surface it. In practice arms end in an expression.
+                    Ok(v)
+                }
+                Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
+                    "`break`/`continue` not allowed in a match arm".to_string(),
+                    arm.span,
+                )),
+            };
         }
         Err(Diagnostic::runtime(
             "no match arm matched (non-exhaustive match)".to_string(),
@@ -2249,21 +2258,36 @@ impl Interp {
                 }
                 Ok(true)
             }
-            // Or-patterns and tuple patterns are M2 Wave 2; the parser does not
-            // yet produce them, so these arms exist only to keep the match
-            // exhaustive over `PatternKind`.
-            // TODO(W2-A): implement or-pattern matching (first matching arm
-            // wins; alternatives bind the same names).
-            PatternKind::Or(_) => Err(Diagnostic::runtime(
-                "or-patterns are not yet implemented (M2 Wave 2)".to_string(),
-                pat.span,
-            )),
-            // TODO(W2-A): implement tuple-pattern destructuring against
-            // `Value::Tuple`.
-            PatternKind::Tuple(_) => Err(Diagnostic::runtime(
-                "tuple patterns are not yet implemented (M2 Wave 2)".to_string(),
-                pat.span,
-            )),
+            // An or-pattern matches if ANY alternative matches; the first
+            // matching alternative's bindings stick (M2). Alternatives are tried
+            // left-to-right against the *same* arm scope. A non-firing arm is
+            // discarded by `eval_match` (it builds a fresh scope per arm), so no
+            // stray binding from a failed alternative ever escapes.
+            PatternKind::Or(alts) => {
+                for alt in alts {
+                    if self.try_match(alt, val, scope)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            // A tuple pattern matches a `Value::Tuple` of equal arity, recursing
+            // element-wise (M2). Nested patterns thus destructure deeply.
+            PatternKind::Tuple(elems) => {
+                let items = match val {
+                    Value::Tuple(items) => items,
+                    _ => return Ok(false),
+                };
+                if elems.len() != items.len() {
+                    return Ok(false);
+                }
+                for (sub, item) in elems.iter().zip(items.iter()) {
+                    if !self.try_match(sub, item, scope)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
         }
     }
 }
@@ -4402,5 +4426,86 @@ mod tests {
         interp.collect_decls(&program);
         let r = interp.exec_stmt(&program.stmts[0], &root);
         assert!(r.is_err());
+    }
+
+    // ----- M2 Wave 2-A: match guards / or-patterns / tuple+nested patterns ----
+
+    #[test]
+    fn match_guard_true_takes_arm() {
+        // The guard holds, so the guarded arm fires (and sees the binding `x`).
+        let src = "n = 7\nmatch n:\n    x if x > 5: x * 2\n    _: 0\n";
+        assert_eq!(as_int(&eval_src(src)), 14);
+    }
+
+    #[test]
+    fn match_guard_false_falls_through() {
+        // The guard fails, so control falls to the next (catch-all) arm.
+        let src = "n = 3\nmatch n:\n    x if x > 5: x * 2\n    _: 99\n";
+        assert_eq!(as_int(&eval_src(src)), 99);
+    }
+
+    #[test]
+    fn match_guard_non_bool_errors() {
+        // A non-Bool guard is a runtime error (no truthiness).
+        let toks = crate::lexer::lex("match 1:\n    x if x: 1\n    _: 0\n").unwrap();
+        let program = crate::parser::parse(&toks).unwrap();
+        let (mut interp, root) = fresh();
+        interp.collect_decls(&program);
+        if let StmtKind::Expr(e) = &program.stmts[0].kind {
+            assert!(interp.eval(e, &root).is_err());
+        } else {
+            panic!("expected expr statement");
+        }
+    }
+
+    #[test]
+    fn or_pattern_literal_alternatives() {
+        // Any of 1/2/3 takes the arm; 4 falls through.
+        let hit = "n = 2\nmatch n:\n    1 or 2 or 3: 1\n    _: 0\n";
+        let miss = "n = 4\nmatch n:\n    1 or 2 or 3: 1\n    _: 0\n";
+        assert_eq!(as_int(&eval_src(hit)), 1);
+        assert_eq!(as_int(&eval_src(miss)), 0);
+    }
+
+    #[test]
+    fn or_pattern_variant_alternatives() {
+        // `.Red or .Green` matches either variant of the scrutinee's enum.
+        let src = "enum Color:\n    Red\n    Green\n    Blue\nc = Color.Green\nmatch c:\n    .Red or .Green: 1\n    .Blue: 0\n";
+        assert_eq!(as_int(&eval_src(src)), 1);
+    }
+
+    #[test]
+    fn or_pattern_binds_from_matching_alternative() {
+        // The binding from the alternative that matched is visible in the body.
+        let src = "n = 5\nmatch n:\n    0: 0\n    x or y: x\n";
+        assert_eq!(as_int(&eval_src(src)), 5);
+    }
+
+    #[test]
+    fn tuple_pattern_destructures() {
+        // A 2-tuple binds element-wise.
+        let src = "p = (3, 4)\nmatch p:\n    (a, b): a + b\n";
+        assert_eq!(as_int(&eval_src(src)), 7);
+    }
+
+    #[test]
+    fn tuple_pattern_wrong_arity_skips() {
+        // A 3-arity tuple pattern does not match a 2-tuple; fall through.
+        let src = "p = (1, 2)\nmatch p:\n    (a, b, c): 0\n    _: 99\n";
+        assert_eq!(as_int(&eval_src(src)), 99);
+    }
+
+    #[test]
+    fn nested_variant_subpattern_binds_inner() {
+        // A variant nested inside a variant binds the inner payload.
+        let src = "enum Inner:\n    Pair(Int, Int)\nenum Outer:\n    Wrap(Inner)\n    None\nv = Outer.Wrap(Inner.Pair(2, 5))\nmatch v:\n    .Wrap(.Pair(a, b)): a + b\n    .None: 0\n";
+        assert_eq!(as_int(&eval_src(src)), 7);
+    }
+
+    #[test]
+    fn nested_literal_subpattern_filters() {
+        // A literal sub-pattern only matches a specific payload value.
+        let src = "enum Tag:\n    N(Int)\nv = Tag.N(2)\nmatch v:\n    .N(1): 10\n    .N(2): 20\n    .N(x): x\n";
+        assert_eq!(as_int(&eval_src(src)), 20);
     }
 }
