@@ -73,10 +73,10 @@ use crate::token::Span;
 /// reference-counted/interior-mutable shapes (`List`, `Struct`, `Closure`,
 /// `Env`) give closures capture-by-reference and structs mutable fields.
 ///
-/// `PartialEq` is derived for convenience, but the language's structural `==`
-/// (and `is`/`is not`) is implemented separately by the interpreter agent —
-/// e.g. `Closure`/`Builtin` equality is not meaningful and `Float` follows IEEE
-/// rules. Do not rely on the derived impl for language semantics.
+/// `PartialEq` is intentionally *not* derived: the language's structural `==`
+/// (and `is`/`is not`) is implemented separately by the `values_equal` free
+/// function — e.g. `Closure`/`Builtin` equality is not meaningful and `Float`
+/// follows IEEE rules. Compare values through `values_equal`, never a derived impl.
 #[derive(Debug, Clone)]
 pub enum Value {
     /// Arbitrary-precision integer.
@@ -93,18 +93,18 @@ pub enum Value {
     /// key/value pairs rather than a hash map because keys are arbitrary
     /// (structurally-hashed) runtime values and insertion order must be
     /// preserved; mutable and shared by reference.
-    /// TODO(W1-B): produced and consumed by map literals / comprehensions /
-    /// built-in methods.
+    /// Produced and consumed by map literals / comprehensions / built-in
+    /// methods.
     Map(Rc<RefCell<Vec<(Value, Value)>>>),
     /// A set (M2), insertion-ordered, deduplicated by structural equality.
     /// Stored as a `Vec` for the same reasons as [`Value::Map`]; mutable and
     /// shared by reference.
-    /// TODO(W1-B): produced and consumed by set literals / comprehensions /
-    /// built-in methods.
+    /// Produced and consumed by set literals / comprehensions / built-in
+    /// methods.
     Set(Rc<RefCell<Vec<Value>>>),
     /// A tuple (M2): a fixed, immutable sequence of values. Shared by reference
     /// (the contents never mutate, so no `RefCell`).
-    /// TODO(W1-B): produced and consumed by tuple literals / patterns.
+    /// Produced and consumed by tuple literals / patterns.
     Tuple(Rc<Vec<Value>>),
     /// The unit value `()`.
     Unit,
@@ -292,6 +292,19 @@ type FlowResult = Result<Flow, Diagnostic>;
 /// Result of evaluating an expression to a [`Value`].
 type EvalResult = Result<Value, Diagnostic>;
 
+/// Collapse the `Flow` coming out of a call/method body into an [`EvalResult`].
+///
+/// A function/method/lambda body either falls off the end (`Normal`) or
+/// `return`s — both yield the call's value. A `break`/`continue` that reaches
+/// here escaped its loop and is a runtime error; `message` and `span` are the
+/// diagnostic that site would have produced.
+fn finish_call(flow: Flow, message: &str, span: Span) -> EvalResult {
+    match flow {
+        Flow::Normal(v) | Flow::Return(v) => Ok(v),
+        Flow::Break | Flow::Continue => Err(Diagnostic::runtime(message.to_string(), span)),
+    }
+}
+
 // ===========================================================================
 // Declaration registry
 // ===========================================================================
@@ -331,13 +344,10 @@ pub fn run(program: &Program) -> Result<(), Diagnostic> {
 
     // 3. Execute top-level statements in order.
     for stmt in &program.stmts {
-        match interp.exec_stmt(stmt, &root)? {
-            Flow::Normal(_) => {}
-            // `return`/`break`/`continue` at top level are meaningless; ignore
-            // the unwind (the parser/checks are expected to reject them, but we
-            // do not crash).
-            _ => {}
-        }
+        // Any top-level `return`/`break`/`continue` unwinding is intentionally
+        // ignored (the parser/checks are expected to reject them, but we do not
+        // crash); we only need to propagate runtime errors.
+        interp.exec_stmt(stmt, &root)?;
     }
 
     // 4. Call zero-arg `main()` if declared.
@@ -1258,13 +1268,8 @@ impl Interp {
                 let c = Rc::clone(c);
                 let call_scope = Scope::child(&c.env);
                 self.bind_call(&f.params, args, &call_scope, &f.name, span, env)?;
-                return match self.exec_stmts(&f.body.stmts, &call_scope)? {
-                    Flow::Normal(v) | Flow::Return(v) => Ok(v),
-                    Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
-                        "`break`/`continue` outside a loop".to_string(),
-                        span,
-                    )),
-                };
+                let flow = self.exec_stmts(&f.body.stmts, &call_scope)?;
+                return finish_call(flow, "`break`/`continue` outside a loop", span);
             }
         }
         // Lambdas / builtins take positional args only (no names/defaults).
@@ -1317,14 +1322,8 @@ impl Interp {
         match &closure.kind {
             ClosureKind::Function(f) => {
                 self.bind_params(&f.params, &args, &call_scope, &f.name, span)?;
-                match self.exec_stmts(&f.body.stmts, &call_scope)? {
-                    Flow::Normal(v) => Ok(v),
-                    Flow::Return(v) => Ok(v),
-                    Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
-                        "`break`/`continue` outside a loop".to_string(),
-                        span,
-                    )),
-                }
+                let flow = self.exec_stmts(&f.body.stmts, &call_scope)?;
+                finish_call(flow, "`break`/`continue` outside a loop", span)
             }
             ClosureKind::Lambda(l) => {
                 if args.len() != l.params.len() {
@@ -1586,14 +1585,8 @@ impl Interp {
         env_define(&method_scope, "self", recv, false);
         self.bind_call(&method.params, args, &method_scope, &method.name, span, env)?;
 
-        match self.exec_stmts(&method.body.stmts, &method_scope)? {
-            Flow::Normal(v) => Ok(v),
-            Flow::Return(v) => Ok(v),
-            Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
-                "`break`/`continue` outside a loop".to_string(),
-                span,
-            )),
-        }
+        let flow = self.exec_stmts(&method.body.stmts, &method_scope)?;
+        finish_call(flow, "`break`/`continue` outside a loop", span)
     }
 
     /// The **built-in method table** for non-user receiver types — `List`,
@@ -2227,12 +2220,14 @@ impl Interp {
             return match self.exec_stmts(&arm.body.stmts, &arm_scope)? {
                 Flow::Normal(v) => Ok(v),
                 Flow::Return(v) => {
-                    // A `return` inside a match arm propagates as a return.
-                    // But `eval` cannot carry a Flow; the surrounding fn
-                    // body handles return via statement evaluation. Since
-                    // match is an expression, treat the arm's `return` as
-                    // its value at expression level is wrong; instead we
-                    // surface it. In practice arms end in an expression.
+                    // `match` is an expression, and `eval` returns a `Value`
+                    // (it cannot carry a `Flow`). So a `return` inside an arm
+                    // collapses to the arm's value here rather than unwinding
+                    // the enclosing function. Arms normally end in a tail
+                    // expression, where this is indistinguishable from
+                    // `Flow::Normal`; an explicit `return` in arm-as-statement
+                    // position does not propagate past the match (see the
+                    // latent-return note on the surrounding fn).
                     Ok(v)
                 }
                 Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
