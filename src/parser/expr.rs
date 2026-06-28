@@ -258,11 +258,13 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// `unary = "-" unary | power`.
+    /// `unary = "-" unary | "try" unary | power`.
     ///
     /// `**` binds tighter than unary minus, so `-2 ** 2` = `-(2 ** 2)`: unary
     /// minus wraps the *power* result, and `parse_power` is what consumes the
-    /// `**`.
+    /// `**`. `try` (M3; spec §9) sits at the same prefix level, so it binds
+    /// tighter than arithmetic — `try f(a) + try f(b)` is `(try f(a)) + (try
+    /// f(b))` and `try f(a) / d` is `(try f(a)) / d`.
     pub(crate) fn parse_unary(&mut self) -> PResult<Expr> {
         if matches!(self.peek(), TokenKind::Minus) {
             let start = self.cur_span();
@@ -273,6 +275,12 @@ impl<'a> Parser<'a> {
                 kind: ExprKind::Unary { op: UnOp::Neg, operand: Box::new(operand) },
                 span,
             })
+        } else if matches!(self.peek(), TokenKind::Try) {
+            let start = self.cur_span();
+            self.advance();
+            let operand = self.parse_unary()?;
+            let span = start.merge(operand.span);
+            Ok(Expr { kind: ExprKind::Try(Box::new(operand)), span })
         } else {
             self.parse_power()
         }

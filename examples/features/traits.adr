@@ -1,0 +1,45 @@
+## Traits: required + default methods, `impl ... for`, override, trait-typed params.
+
+trait Greet:
+    fn name(self) -> String              # required
+
+    fn hello(self) -> String:            # default method, built on the required one
+        return "Hello, {self.name()}!"
+
+struct Dog:
+    pet_name: String
+
+struct Robot:
+    id: Int
+
+impl Greet for Dog:
+    fn name(self) -> String:
+        return self.pet_name
+    # hello() is inherited from the trait default
+
+impl Greet for Robot:
+    fn name(self) -> String:
+        return "unit-{self.id}"
+
+    fn hello(self) -> String:            # overrides the default
+        return "BEEP {self.name()}"
+
+## A trait-typed parameter — dispatch happens at runtime on the actual value.
+fn announce(g: Greet) -> String:
+    return g.hello()
+
+fn main():
+    d = Dog(pet_name: "Rex")
+    r = Robot(id: 7)
+
+    print(d.name())          # Rex
+    print(d.hello())         # Hello, Rex!   (inherited default)
+    print(r.hello())         # BEEP unit-7   (override)
+
+    print(announce(d))       # Hello, Rex!
+    print(announce(r))       # BEEP unit-7
+
+    # A list of trait values; each dispatches to its own impl.
+    crowd = [d, r]
+    for g in crowd:
+        print(announce(g))

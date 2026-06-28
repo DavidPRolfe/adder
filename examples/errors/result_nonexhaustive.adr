@@ -1,0 +1,7 @@
+## A `match` over a `Result` must cover both `Ok` and `Err` (M3; spec §9).
+## This omits the `Err` arm, so exhaustiveness rejects it at compile time.
+
+fn main():
+    r: Result[Int, String] = Ok(1)
+    match r:
+        Ok(n): print("got {n}")

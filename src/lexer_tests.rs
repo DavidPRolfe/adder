@@ -48,7 +48,10 @@
 
     #[test]
     fn print_and_panic_are_names() {
-        let ks = kinds("print panic Self trait import from as to try\n");
+        // `print`/`panic` are prelude bindings, not keywords. `Self`/`import`/
+        // `from`/`as`/`to` are still reserved-but-unused → plain names. M3
+        // activated `trait` and `try` as keywords (spec §7, §9).
+        let ks = kinds("print panic Self import from as to trait try\n");
         use TokenKind::*;
         assert_eq!(
             ks,
@@ -56,12 +59,12 @@
                 Name("print".into()),
                 Name("panic".into()),
                 Name("Self".into()),
-                Name("trait".into()),
                 Name("import".into()),
                 Name("from".into()),
                 Name("as".into()),
                 Name("to".into()),
-                Name("try".into()),
+                Trait,
+                Try,
                 Newline,
                 Eof,
             ]

@@ -86,8 +86,12 @@ pub enum StmtKind {
     /// An enum declaration (grammar §4.5).
     Enum(EnumDecl),
 
-    /// An inherent `impl Type:` block (grammar §4.6).
+    /// An inherent `impl Type:` block (grammar §4.6), or a trait impl
+    /// `impl Trait for Type:` (M3) when [`ImplDecl::trait_name`] is set.
     Impl(ImplDecl),
+
+    /// A `trait` declaration (M3; spec §7).
+    Trait(TraitDecl),
 }
 
 /// A binding statement (grammar §4.1). The three surface forms collapse into
@@ -223,6 +227,9 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: String,
+    /// Declared type parameters `[T: Bound, …]` (M3; spec §10). **Parsed, not
+    /// checked** — erased at runtime (typed-lite). Empty for a non-generic `fn`.
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     /// Result type from a `-> T` clause; `None` means unit `()`. (The field name
     /// `returns` is kept for stability; the surface syntax is `->` as of M2 —
@@ -256,6 +263,12 @@ pub enum Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDecl {
     pub name: String,
+    /// Declared type parameters `[T, …]` (M3). Erased at runtime.
+    pub type_params: Vec<TypeParam>,
+    /// Opt-in derives from a `derive Ord` line above the declaration (M3;
+    /// spec §7.1). Only `Ord` is meaningful in M3 (`Eq`/`Hash`/`Show` are
+    /// automatic). Empty when no `derive` line is present.
+    pub derives: Vec<String>,
     pub fields: Vec<FieldDecl>,
     pub doc: Option<String>,
     pub span: Span,
@@ -274,6 +287,11 @@ pub struct FieldDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDecl {
     pub name: String,
+    /// Declared type parameters `[T, …]` (M3). Erased at runtime. The prelude
+    /// `Result[T, E]` enum is seeded with these set.
+    pub type_params: Vec<TypeParam>,
+    /// Opt-in derives (`derive Ord`); see [`StructDecl::derives`].
+    pub derives: Vec<String>,
     pub variants: Vec<VariantDecl>,
     pub doc: Option<String>,
     pub span: Span,
@@ -299,12 +317,59 @@ pub enum Payload {
     Named(Vec<(String, Type)>),
 }
 
-/// An inherent `impl Type:` block of methods (grammar §4.6).
+/// An inherent `impl Type:` block of methods (grammar §4.6), or a **trait impl**
+/// `impl Trait for Type:` (M3; spec §7) when [`trait_name`](Self::trait_name) is
+/// set. The first parsed type-path is the trait when a `for` clause follows it;
+/// otherwise it is the implementing type (an inherent impl).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDecl {
     /// The type the methods are attached to (a `base_type` name in M1).
     pub type_name: String,
+    /// The trait being implemented, for `impl Trait for Type:` (M3). `None` for
+    /// an inherent `impl Type:` block.
+    pub trait_name: Option<String>,
+    /// Declared type parameters `impl[T] … :` (M3). Erased at runtime.
+    pub type_params: Vec<TypeParam>,
     pub methods: Vec<FnDecl>,
+    pub span: Span,
+}
+
+/// A `trait` declaration (M3; spec §7): a set of **required** method signatures
+/// and optional **default** methods built on them. Dispatch and conformance are
+/// resolved at runtime (typed-lite — a missing required method surfaces when it
+/// is called; see `spec/06-m3-scope.md`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitDecl {
+    pub name: String,
+    /// Declared type parameters `trait Name[T]:` (M3). Erased at runtime.
+    pub type_params: Vec<TypeParam>,
+    /// Required methods — a signature with no body. Informational in M3.
+    pub required: Vec<TraitSig>,
+    /// Default methods — a full `fn` with a body, inherited by an `impl` that
+    /// does not override them.
+    pub defaults: Vec<FnDecl>,
+    pub doc: Option<String>,
+    pub span: Span,
+}
+
+/// A required trait method signature (M3): a `fn` header with no body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitSig {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub returns: Option<Type>,
+    pub doc: Option<String>,
+    pub span: Span,
+}
+
+/// A declared type parameter `T` or `T: Bound and Bound2` (M3; spec §10).
+/// **Parsed, not checked** — the bounds document intent; the tree-walker erases
+/// `T` at runtime (typed-lite, see `spec/06-m3-scope.md`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    /// Trait bounds (`T: Ord and Show` → `["Ord", "Show"]`); empty if unbounded.
+    pub bounds: Vec<String>,
     pub span: Span,
 }
 
@@ -412,6 +477,13 @@ pub enum ExprKind {
     /// A comprehension `[out for binder in iter (if cond)?]` and its map/set
     /// forms (M2). See [`Comprehension`].
     Comprehension(Comprehension),
+
+    /// A `try expr` (M3; spec §9): evaluate `expr` (a `Result`), unwrap on `Ok`,
+    /// or early-return the `Err` from the enclosing function. The early-return is
+    /// runtime control flow (see `crate::interp`), so this is its own node rather
+    /// than a [`UnOp`]. Binds tighter than arithmetic (grammar §6 of the M3
+    /// grammar).
+    Try(Box<Expr>),
 }
 
 /// A string literal as a sequence of segments (grammar §1.5).
@@ -663,4 +735,42 @@ pub enum BaseType {
     /// A **tuple type** `(A, B, …)` (M2; spec §6). Always has at least two
     /// components — `(T)` is grouping, not a 1-tuple.
     Tuple(Vec<Type>),
+}
+
+// ===========================================================================
+// Prelude declarations (M3)
+// ===========================================================================
+
+/// The prelude `Result[T, E]` enum (M3; spec §9): `Ok(T)` / `Err(E)`.
+///
+/// Both the checker ([`crate::checks`]) and the interpreter ([`crate::interp`])
+/// seed this same declaration so that `Ok`/`Err` construct, `match` over a
+/// `Result` resolves its variants, and exhaustiveness is enforced — all with no
+/// per-stage special-casing. Construction of the bare `Ok`/`Err` forms is via
+/// prelude constructors in the interpreter; this decl supplies the *metadata*
+/// (variant set, `variant → enum` mapping).
+pub fn result_enum_decl() -> EnumDecl {
+    let dummy = Span::dummy();
+    let tref = |n: &str| Type {
+        base: BaseType::Named { name: n.to_string(), args: vec![] },
+        nullable: false,
+        span: dummy,
+    };
+    let variant = |name: &str, payload_ty: &str| VariantDecl {
+        name: name.to_string(),
+        payload: Some(Payload::Positional(vec![tref(payload_ty)])),
+        doc: None,
+        span: dummy,
+    };
+    EnumDecl {
+        name: "Result".to_string(),
+        type_params: vec![
+            TypeParam { name: "T".to_string(), bounds: vec![], span: dummy },
+            TypeParam { name: "E".to_string(), bounds: vec![], span: dummy },
+        ],
+        derives: vec![],
+        variants: vec![variant("Ok", "T"), variant("Err", "E")],
+        doc: None,
+        span: dummy,
+    }
 }

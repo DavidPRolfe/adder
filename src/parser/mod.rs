@@ -288,6 +288,8 @@ fn describe(kind: &TokenKind) -> String {
         TokenKind::Or => "`or`".into(),
         TokenKind::Not => "`not`".into(),
         TokenKind::Is => "`is`".into(),
+        TokenKind::Trait => "`trait`".into(),
+        TokenKind::Try => "`try`".into(),
         TokenKind::True => "`true`".into(),
         TokenKind::False => "`false`".into(),
         TokenKind::Null => "`null`".into(),

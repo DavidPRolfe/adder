@@ -113,6 +113,10 @@ impl EnumInfo {
             enums.insert(decl.name.clone(), variants);
         };
 
+        // M3: seed the prelude `Result` enum (spec §9) so a `match` over a
+        // `Result` is exhaustiveness-checked and `Ok`/`Err` resolve to it.
+        record(&crate::ast::result_enum_decl(), &mut enums, &mut variant_owner);
+
         // Walk the whole program so enums nested in fn/impl/struct bodies count.
         walk_enum_decls(&program.stmts, &mut |decl| {
             record(decl, &mut enums, &mut variant_owner);
@@ -223,6 +227,7 @@ pub(crate) fn walk_child_exprs(e: &Expr, f: &mut impl FnMut(&Expr)) {
             f(index);
         }
         ExprKind::Member { base, .. } => f(base),
+        ExprKind::Try(inner) => f(inner),
         ExprKind::List(items) => {
             for it in items {
                 f(it);

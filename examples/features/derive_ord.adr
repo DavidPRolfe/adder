@@ -1,0 +1,37 @@
+## derive Ord: opt-in lexicographic ordering, comparisons, sort, min/max, enums.
+
+derive Ord
+struct Version:
+    major: Int
+    minor: Int
+
+derive Ord
+enum Level:
+    Low
+    Mid
+    High
+
+fn main():
+    a = Version(major: 1, minor: 2)
+    b = Version(major: 1, minor: 5)
+    c = Version(major: 2, minor: 0)
+
+    # Comparisons by declaration order: major first, then minor.
+    print(a < b)                               # true
+    print(b < c)                               # true
+    print(c > a)                               # true
+    print(a == Version(major: 1, minor: 2))    # true (structural Eq is automatic)
+
+    # In-place sort orders the list ascending.
+    vs = [c, a, b]
+    vs.sort()
+    for v in vs:
+        print(v)
+
+    # min / max on the derived type.
+    print(vs.min())                            # Version(major: 1, minor: 2)
+    print(vs.max())                            # Version(major: 2, minor: 0)
+
+    # Enums order by variant declaration order.
+    print(Level.Low < Level.High)              # true
+    print([Level.High, Level.Low, Level.Mid].sorted())   # [Low, Mid, High]

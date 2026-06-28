@@ -37,9 +37,16 @@ impl<'a> Parser<'a> {
                 let span = f.span;
                 Ok(Stmt { kind: StmtKind::Fn(f), span })
             }
-            TokenKind::Struct => self.parse_struct(),
-            TokenKind::Enum => self.parse_enum(),
+            TokenKind::Struct => self.parse_struct(Vec::new()),
+            TokenKind::Enum => self.parse_enum(Vec::new()),
             TokenKind::Impl => self.parse_impl(),
+            TokenKind::Trait => self.parse_trait(),
+            // `derive` is a contextual keyword: only at a declaration head, and
+            // only when a trait name follows (a bare `derive` is still an
+            // ordinary identifier / expression statement).
+            TokenKind::Name(n) if n == "derive" && matches!(self.peek_n(1), TokenKind::Name(_)) => {
+                self.parse_derived_decl()
+            }
             _ => {
                 let stmt = self.parse_simple_stmt()?;
                 self.expect_stmt_newline()?;

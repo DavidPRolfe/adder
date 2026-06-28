@@ -58,7 +58,14 @@ fn enum_decl(name: &str, variants: &[(&str, usize)]) -> Stmt {
             span: sp(),
         })
         .collect();
-    stmt(StmtKind::Enum(EnumDecl { name: name.to_string(), variants, doc: None, span: sp() }))
+    stmt(StmtKind::Enum(EnumDecl {
+        name: name.to_string(),
+        type_params: vec![],
+        derives: vec![],
+        variants,
+        doc: None,
+        span: sp(),
+    }))
 }
 
 fn variant_arm(name: &str, binds: &[&str], body: Expr) -> MatchArm {
@@ -106,6 +113,7 @@ fn fn_one_param(
 ) -> Stmt {
     stmt(StmtKind::Fn(FnDecl {
         name: fname.to_string(),
+        type_params: vec![],
         params: vec![Param::Named { name: pname.to_string(), ty: pty, default: None }],
         returns,
         body: block(body),
@@ -268,6 +276,7 @@ fn exhaustive_construction_scrutinee_resolves() {
     );
     let main = stmt(StmtKind::Fn(FnDecl {
         name: "main".to_string(),
+        type_params: vec![],
         params: vec![],
         returns: None,
         body: block(vec![stmt(StmtKind::Expr(m))]),

@@ -52,7 +52,7 @@
 //! - **Show** — `Float` always renders with a decimal point (`9.0`, not `9`).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::rc::Rc;
 
@@ -62,7 +62,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use crate::ast::{
     Arg, BinOp, Block, EnumDecl, Expr, ExprKind, FnDecl, ForStmt, IfStmt, LitPattern,
     MatchExpr, Param, Pattern, PatternKind, Payload, Program, Stmt, StmtKind, StrSeg, StructDecl,
-    Target, TargetSeg, UnOp, WhileStmt,
+    Target, TargetSeg, TraitDecl, UnOp, WhileStmt,
 };
 use crate::error::Diagnostic;
 use crate::token::Span;
@@ -122,19 +122,40 @@ fn finish_call(flow: Flow, message: &str, span: Span) -> EvalResult {
     }
 }
 
+/// The sentinel error a `try` (M3; spec §9) raises to unwind to the nearest call
+/// boundary along the `?` chain. It is always intercepted by
+/// [`Interp::finish_body`] (which checks `propagating`); its message only
+/// surfaces if a `try` escapes every enclosing function — e.g. at top level —
+/// which is a misuse.
+fn try_unwind_sentinel(span: Span) -> Diagnostic {
+    Diagnostic::runtime(
+        "`try` used outside a function returning a `Result`".to_string(),
+        span,
+    )
+}
+
 // ===========================================================================
 // Declaration registry
 // ===========================================================================
 
 /// Collected top-level declarations, used for construction and method lookup.
 #[derive(Default)]
-struct Registry {
+pub(crate) struct Registry {
     structs: HashMap<String, Rc<StructDecl>>,
     enums: HashMap<String, Rc<EnumDecl>>,
-    /// `Type::method` → the method's `FnDecl`.
+    /// `Type::method` → the method's `FnDecl`. Trait-impl methods and inherited
+    /// trait default methods (M3) are folded into this same table at collect
+    /// time, so method dispatch is uniform — see [`Interp::collect_decls`].
     methods: HashMap<(String, String), Rc<FnDecl>>,
+    /// `Trait name` → its declaration (M3), used to inherit default methods into
+    /// the `methods` table for each `impl Trait for Type`.
+    traits: HashMap<String, Rc<TraitDecl>>,
     /// `Variant name` → `Enum name`, so a bare `Add(...)` resolves its enum.
     variant_to_enum: HashMap<String, String>,
+    /// Names of struct/enum types that opted into ordering with `derive Ord`
+    /// (M3; spec §7.1). Comparison (`<`/`<=`/`>`/`>=`) and `.sort()` of a user
+    /// type are allowed only when its name is in this set.
+    ord_types: HashSet<String>,
 }
 
 /// The interpreter's per-run state.
@@ -147,6 +168,12 @@ struct Interp<'a> {
     registry: Registry,
     /// Where program output goes (`print`). Borrowed for the run's duration.
     out: &'a mut dyn Write,
+    /// M3 `try` propagation (spec §9). When `try` hits an `Err`, it stashes the
+    /// whole `Err(..)` value here and unwinds via a sentinel error along the
+    /// existing `?` chain; the nearest function/method/lambda boundary takes it
+    /// and makes it that call's return value. `Some` only transiently, during an
+    /// unwind. See [`Interp::eval_try`] and [`Interp::finish_body`].
+    propagating: Option<Value>,
 }
 
 // ===========================================================================
@@ -160,7 +187,7 @@ struct Interp<'a> {
 /// writer. Pass `&mut std::io::stdout().lock()` for the normal CLI behaviour, or
 /// a `&mut Vec<u8>` to capture output in-process.
 pub fn run(program: &Program, out: &mut dyn Write) -> Result<(), Diagnostic> {
-    let mut interp = Interp { registry: Registry::default(), out };
+    let mut interp = Interp { registry: Registry::default(), out, propagating: None };
     let root = Scope::new_root();
 
     // 1. Seed the prelude.
@@ -207,16 +234,31 @@ fn seed_prelude(root: &Env) {
     env_define(root, "print", Value::Builtin(Builtin::Print), false);
     env_define(root, "panic", Value::Builtin(Builtin::Panic), false);
     env_define(root, "Set", Value::Builtin(Builtin::Set), false);
+    // M3: the prelude `Result` constructors (spec §9). The matching `Result`
+    // enum metadata is seeded into the registry by `collect_decls`.
+    env_define(root, "Ok", Value::Builtin(Builtin::Ok), false);
+    env_define(root, "Err", Value::Builtin(Builtin::Err), false);
 }
 
 impl<'a> Interp<'a> {
     /// Collect all top-level declarations into the registry.
+    ///
+    /// Two passes so declaration order never matters: pass 1 registers types and
+    /// traits; pass 2 registers `impl` blocks (M3: inherent **and** trait impls).
+    /// For a trait impl, the trait's default methods that the impl does not
+    /// override are folded into the method table under the implementing type, so
+    /// `call_method` dispatch stays uniform and trait dispatch needs no special
+    /// path (typed-lite — see `spec/06-m3-scope.md`).
     fn collect_decls(&mut self, program: &Program) {
+        // Pass 1: types and traits.
         for stmt in &program.stmts {
             match &stmt.kind {
                 StmtKind::Struct(s) => {
                     // Methods live only in `impl` blocks; a struct body is fields.
                     self.registry.structs.insert(s.name.clone(), Rc::new(s.clone()));
+                    if s.derives.iter().any(|d| d == "Ord") {
+                        self.registry.ord_types.insert(s.name.clone());
+                    }
                 }
                 StmtKind::Enum(e) => {
                     for v in &e.variants {
@@ -225,15 +267,52 @@ impl<'a> Interp<'a> {
                             .insert(v.name.clone(), e.name.clone());
                     }
                     self.registry.enums.insert(e.name.clone(), Rc::new(e.clone()));
-                }
-                StmtKind::Impl(i) => {
-                    for m in &i.methods {
-                        self.registry
-                            .methods
-                            .insert((i.type_name.clone(), m.name.clone()), Rc::new(m.clone()));
+                    if e.derives.iter().any(|d| d == "Ord") {
+                        self.registry.ord_types.insert(e.name.clone());
                     }
                 }
+                StmtKind::Trait(t) => {
+                    self.registry.traits.insert(t.name.clone(), Rc::new(t.clone()));
+                }
                 _ => {}
+            }
+        }
+        // M3: seed the prelude `Result` enum's metadata (spec §9) so qualified
+        // construction, matching, and `variant → enum` resolution work. The bare
+        // `Ok`/`Err` constructors are seeded separately in `seed_prelude`.
+        let result = crate::ast::result_enum_decl();
+        for v in &result.variants {
+            self.registry
+                .variant_to_enum
+                .insert(v.name.clone(), result.name.clone());
+        }
+        self.registry.enums.insert(result.name.clone(), Rc::new(result));
+        // Pass 2: impls (resolve trait defaults against the traits from pass 1).
+        for stmt in &program.stmts {
+            if let StmtKind::Impl(i) = &stmt.kind {
+                let mut defined: Vec<String> = Vec::with_capacity(i.methods.len());
+                for m in &i.methods {
+                    defined.push(m.name.clone());
+                    self.registry
+                        .methods
+                        .insert((i.type_name.clone(), m.name.clone()), Rc::new(m.clone()));
+                }
+                // Trait impl: inherit each default method this impl did not
+                // override. An unknown trait name is tolerated (typed-lite); the
+                // impl's own methods still register, default inheritance is just
+                // skipped.
+                if let Some(trait_name) = &i.trait_name {
+                    if let Some(tr) = self.registry.traits.get(trait_name).cloned() {
+                        for d in &tr.defaults {
+                            if !defined.contains(&d.name) {
+                                self.registry.methods.insert(
+                                    (i.type_name.clone(), d.name.clone()),
+                                    Rc::new(d.clone()),
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -320,7 +399,7 @@ impl<'a> Interp<'a> {
             }
             // Type declarations have no runtime effect beyond registry
             // collection (already done before execution).
-            StmtKind::Struct(_) | StmtKind::Enum(_) | StmtKind::Impl(_) => {
+            StmtKind::Struct(_) | StmtKind::Enum(_) | StmtKind::Impl(_) | StmtKind::Trait(_) => {
                 Ok(Flow::Normal(Value::Unit))
             }
         }
@@ -589,6 +668,8 @@ impl<'a> Interp<'a> {
             ExprKind::SelfExpr => env_get(env, "self").ok_or_else(|| {
                 Diagnostic::runtime("`self` is not bound here".to_string(), expr.span)
             }),
+            // `try expr` (M3; spec §9).
+            ExprKind::Try(inner) => self.eval_try(inner, expr.span, env),
             ExprKind::List(elems) => {
                 let mut vals = Vec::with_capacity(elems.len());
                 for e in elems {
@@ -838,6 +919,10 @@ impl<'a> Interp<'a> {
             (Value::Int(a), Value::Float(b)) => bigint_to_f64(a).partial_cmp(b),
             (Value::Float(a), Value::Int(b)) => a.partial_cmp(&bigint_to_f64(b)),
             (Value::Str(a), Value::Str(b)) => a.partial_cmp(b),
+            // M3: user types that opted into `derive Ord` compare structurally.
+            (Value::Struct(_), Value::Struct(_)) | (Value::Enum(_), Value::Enum(_)) => {
+                Some(compare_values(l, r, &self.registry, span)?)
+            }
             _ => {
                 return Err(Diagnostic::runtime(
                     format!(
@@ -1105,8 +1190,8 @@ impl<'a> Interp<'a> {
                 let c = Rc::clone(c);
                 let call_scope = Scope::child(&c.env);
                 self.bind_call(&f.params, args, &call_scope, &f.name, span, env)?;
-                let flow = self.exec_stmts(&f.body.stmts, &call_scope)?;
-                return finish_call(flow, "`break`/`continue` outside a loop", span);
+                let body = self.exec_stmts(&f.body.stmts, &call_scope);
+                return self.finish_body(body, "`break`/`continue` outside a loop", span);
             }
         }
         // Lambdas / builtins take positional args only (no names/defaults).
@@ -1159,8 +1244,8 @@ impl<'a> Interp<'a> {
         match &closure.kind {
             ClosureKind::Function(f) => {
                 self.bind_params(&f.params, &args, &call_scope, &f.name, span)?;
-                let flow = self.exec_stmts(&f.body.stmts, &call_scope)?;
-                finish_call(flow, "`break`/`continue` outside a loop", span)
+                let body = self.exec_stmts(&f.body.stmts, &call_scope);
+                self.finish_body(body, "`break`/`continue` outside a loop", span)
             }
             ClosureKind::Lambda(l) => {
                 if args.len() != l.params.len() {
@@ -1176,8 +1261,13 @@ impl<'a> Interp<'a> {
                 for (p, v) in l.params.iter().zip(args.into_iter()) {
                     env_define(&call_scope, p, v, false);
                 }
-                // A lambda body is a single expression.
-                self.eval(&l.body, &call_scope)
+                // A lambda body is a single expression. A `try` inside it (M3)
+                // unwinds to here, the lambda's own boundary.
+                let r = self.eval(&l.body, &call_scope);
+                match r {
+                    Err(_) if self.propagating.is_some() => Ok(self.propagating.take().unwrap()),
+                    other => other,
+                }
             }
         }
     }
@@ -1394,8 +1484,47 @@ impl<'a> Interp<'a> {
         env_define(&method_scope, "self", recv, false);
         self.bind_call(&method.params, args, &method_scope, &method.name, span, env)?;
 
-        let flow = self.exec_stmts(&method.body.stmts, &method_scope)?;
-        finish_call(flow, "`break`/`continue` outside a loop", span)
+        let body = self.exec_stmts(&method.body.stmts, &method_scope);
+        self.finish_body(body, "`break`/`continue` outside a loop", span)
+    }
+
+    /// Evaluate `try expr` (M3; spec §9). `expr` must produce a `Result`: `Ok(v)`
+    /// yields `v`; `Err(..)` is stashed in `self.propagating` and unwound via a
+    /// sentinel error to the nearest call boundary ([`Self::finish_body`]), which
+    /// returns it as the enclosing function's value.
+    fn eval_try(&mut self, inner: &Expr, span: Span, env: &Env) -> EvalResult {
+        let v = self.eval(inner, env)?;
+        match &v {
+            Value::Enum(e) if e.enum_name == "Result" => match e.variant.as_str() {
+                "Ok" => Ok(e.payload.first().cloned().unwrap_or(Value::Unit)),
+                "Err" => {
+                    self.propagating = Some(v.clone());
+                    Err(try_unwind_sentinel(span))
+                }
+                _ => Err(Diagnostic::runtime(
+                    "`try` expects a `Result` (`Ok`/`Err`)".to_string(),
+                    span,
+                )),
+            },
+            _ => Err(Diagnostic::runtime(
+                "`try` can only be applied to a `Result` value".to_string(),
+                span,
+            )),
+        }
+    }
+
+    /// Collapse a function/method/lambda body result into the call's value,
+    /// honoring an in-flight `try` propagation (M3): a body that errored while
+    /// `self.propagating` is set is a `try` unwind, so the propagated `Err`
+    /// becomes this call's return value rather than a runtime error.
+    fn finish_body(&mut self, body: FlowResult, message: &str, span: Span) -> EvalResult {
+        match body {
+            Ok(flow) => finish_call(flow, message, span),
+            Err(d) => match self.propagating.take() {
+                Some(v) => Ok(v),
+                None => Err(d),
+            },
+        }
     }
 
     fn construct_struct(

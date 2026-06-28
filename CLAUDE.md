@@ -108,13 +108,38 @@ removing a match arm is a compile-time error, an unnarrowed `T?` is a
 compile-time error, and `val` reassignment / non-Bool conditions are rejected.
 The M2 **definition of done** lives in `tests/m2_showcase.rs` /
 `examples/m2_showcase.adr` and [`spec/04-m2-scope.md`](spec/04-m2-scope.md).
+The M3 **definition of done** lives in `tests/m3_showcase.rs` / `tests/m3_features.rs` /
+`examples/m3_showcase.adr` and [`spec/06-m3-scope.md`](spec/06-m3-scope.md).
 
-## Deferred — NOT yet implemented (M3+)
+## M3 — landed, but **typed-lite** (don't over-assume)
+
+M3 ([`spec/06-m3-scope.md`](spec/06-m3-scope.md), grammar
+[`spec/07-m3-grammar.md`](spec/07-m3-grammar.md)) added these, all *runtime*-checked —
+the two static checks are unchanged except that exhaustiveness now also sees the prelude
+`Result` enum:
+
+- **Traits** — `trait` (required sigs + default methods), `impl Trait for Type`, `Self`
+  (as a type). Dispatch is runtime: a trait impl's methods and inherited defaults are
+  folded into the same method table as inherent methods (`interp::collect_decls`), so a
+  trait-typed parameter (`fn f(x: Drawable)`) is duck-dispatched. A missing required
+  method is a **runtime** error, not a static one.
+- **`Result` + `try`** — `Result[T, E]` (`Ok`/`Err`) is a prelude enum seeded by both the
+  checker and the interpreter (`ast::result_enum_decl`); `Ok`/`Err` are prelude
+  constructors and may be matched **unqualified** (`Ok(v):`/`Err(e):`) — the one exception
+  to the qualified-variant rule. `try expr` early-returns the `Err` via a propagation
+  side-channel (`Interp::propagating` + `finish_body`), not an `EvalError` refactor.
+- **`derive Ord`** — opt-in structural ordering (lexicographic by declaration order),
+  gated by `Registry::ord_types`; enables `<`/`<=`/`>`/`>=` and `.sort()`/`sorted`/`min`/
+  `max` on user types. `Eq`/`Hash`/`Show` remain automatic.
+- **Generics** — `[T: Bound and Bound2]` on `fn`/`struct`/`enum`/`impl`/`trait` are
+  **parsed and erased**, never checked (mirrors M2's function-type posture).
+
+## Deferred — NOT yet implemented (M4+)
 
 These are not yet built — don't assume they exist:
 
-- Traits / `impl Trait for Type` / `Self` / `derive`
-- Generics + trait bounds (user-declared `[T]`)
-- `Result` / `try` / error propagation (the project uses `panic`)
+- **Full type checker + inference** (only the two static checks exist) — the M4 posture
+  change; also home to **generic bound checking** and **trait conformance** as static checks
+- Lazy iterator pipelines (M2/M3 ship eager)
 - Modules / imports
-- Full type checker + inference (only the two static checks exist)
+- Associated types/constants on traits; `Char`; REPL; word-ranges; `private`

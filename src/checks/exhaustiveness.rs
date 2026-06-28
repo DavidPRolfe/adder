@@ -109,6 +109,12 @@ impl<'a> Exhaustiveness<'a> {
                 }
             }
             StmtKind::Enum(_) => {}
+            // Trait default methods have bodies that may contain matches.
+            StmtKind::Trait(t) => {
+                for m in &t.defaults {
+                    self.check_fn(m);
+                }
+            }
         }
     }
 

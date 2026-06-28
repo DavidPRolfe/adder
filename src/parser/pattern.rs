@@ -100,6 +100,16 @@ impl<'a> Parser<'a> {
                         },
                         span: span.merge(end),
                     })
+                } else if matches!(self.peek(), TokenKind::LParen) && (name == "Ok" || name == "Err") {
+                    // The prelude `Result` variants (M3; spec §9) may be matched
+                    // unqualified — `Ok(v):` / `Err(e):` — mirroring their bare
+                    // `Ok(...)` / `Err(...)` constructors. User enum variants
+                    // still name their enum (the branch below).
+                    let (subs, end) = self.parse_variant_subs(span)?;
+                    Ok(Pattern {
+                        kind: PatternKind::Variant { enum_name: None, name, subs },
+                        span: span.merge(end),
+                    })
                 } else if matches!(self.peek(), TokenKind::LParen) {
                     // A bare `NAME(...)` is no longer a variant pattern — variants
                     // are qualified.

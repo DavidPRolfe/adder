@@ -1,0 +1,50 @@
+## Result + try: Ok/Err construction, `try` propagation, match on a Result.
+
+enum MathError:
+    DivByZero
+    Negative
+
+## `try` unwraps Ok or early-returns the Err.
+fn checked_div(a: Int, b: Int) -> Result[Int, MathError]:
+    if b == 0:
+        return Err(MathError.DivByZero)
+    return Ok(a / b)
+
+## Integer floor-sqrt; negative input is an error.
+fn floor_sqrt(n: Int) -> Result[Int, MathError]:
+    if n < 0:
+        return Err(MathError.Negative)
+    i = 0
+    while (i + 1) * (i + 1) <= n:
+        i = i + 1
+    return Ok(i)
+
+## Chains two fallible steps with `try`; either Err short-circuits.
+fn div_then_root(a: Int, b: Int) -> Result[Int, MathError]:
+    q = try checked_div(a, b)
+    return floor_sqrt(q)
+
+fn main():
+    # Direct construction + explicit match (bare Ok/Err patterns).
+    match checked_div(10, 2):
+        Ok(v):  print("ok {v}")          # ok 5
+        Err(e): print("err {e}")
+
+    match checked_div(1, 0):
+        Ok(v):  print("ok {v}")
+        Err(e): print("err {e}")         # err DivByZero
+
+    # `try` chain: 20 / 2 = 10, floor sqrt 10 = 3.
+    match div_then_root(20, 2):
+        Ok(v):  print("root {v}")        # root 3
+        Err(e): print("err {e}")
+
+    # `try` chain short-circuits on the first Err (divide by zero).
+    match div_then_root(5, 0):
+        Ok(v):  print("root {v}")
+        Err(e): print("err {e}")         # err DivByZero
+
+    # Leading-dot patterns work too.
+    match floor_sqrt(-4):
+        .Ok(v):  print("root {v}")
+        .Err(e): print("err {e}")        # err Negative

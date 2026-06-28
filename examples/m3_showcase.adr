@@ -1,0 +1,63 @@
+## M3 showcase: abstraction + the real error model.
+
+trait Area:
+    fn area(self) -> Float                      # required
+
+    fn describe(self) -> String:                # default, built on the required method
+        return "area = {self.area()}"
+
+struct Circle:
+    radius: Float
+
+struct Rect:
+    w: Float
+    h: Float
+
+impl Area for Circle:
+    fn area(self) -> Float:
+        return 3.14159 * self.radius * self.radius
+
+impl Area for Rect:
+    fn area(self) -> Float:
+        return self.w * self.h
+
+    fn describe(self) -> String:                # overrides the trait default
+        return "rect {self.w} x {self.h} = {self.area()}"
+
+enum ShapeError:
+    NegativeSize
+
+fn checked_rect(w: Float, h: Float) -> Result[Rect, ShapeError]:
+    if w < 0.0 or h < 0.0:
+        return Err(ShapeError.NegativeSize)
+    return Ok(Rect(w: w, h: h))
+
+fn scaled_area(w: Float, h: Float, k: Float) -> Result[Float, ShapeError]:
+    r = try checked_rect(w, h)                   # try: unwrap Ok, or early-return Err
+    return Ok(r.area() * k)
+
+fn total_area(shapes: List[Area]) -> Float:      # trait-typed parameter (runtime dispatch)
+    return shapes.map(s -> s.area()).sum()
+
+derive Ord                                        # opt-in: order by points, then name
+struct Score:
+    points: Int
+    name: String
+
+fn main():
+    shapes = [Circle(radius: 1.0), Rect(w: 2.0, h: 3.0)]
+    for s in shapes:
+        print(s.describe())                       # Circle: trait default; Rect: override
+    print("total = {total_area(shapes)}")
+
+    match scaled_area(2.0, 3.0, 2.0):
+        Ok(a):  print("scaled = {a}")             # scaled = 12.0
+        Err(e): print("rejected: {e}")
+
+    match scaled_area(-1.0, 3.0, 2.0):
+        Ok(a):  print("scaled = {a}")
+        Err(e): print("rejected: {e}")            # rejected: NegativeSize
+
+    board = [Score(points: 2, name: "z"), Score(points: 2, name: "a")]
+    board.sort()                                  # derive Ord makes this legal
+    print(board[0])                               # Score(points: 2, name: a)

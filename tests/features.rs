@@ -169,3 +169,62 @@ fn values_ops_corpus() {
         ],
     );
 }
+
+// ===========================================================================
+// Traits (M3) — required + default methods, `impl ... for`, an inherited
+// default, an override, and a trait-typed parameter dispatched at runtime.
+// ===========================================================================
+
+#[test]
+fn traits_corpus() {
+    assert_lines(
+        "examples/features/traits.adr",
+        &[
+            "Rex",
+            "Hello, Rex!",
+            "BEEP unit-7",
+            "Hello, Rex!",
+            "BEEP unit-7",
+            "Hello, Rex!",
+            "BEEP unit-7",
+        ],
+    );
+}
+
+// ===========================================================================
+// Result + try (M3) — Ok/Err construction, `try` unwrap + early-return,
+// a two-step `try` chain that short-circuits, bare and leading-dot patterns.
+// ===========================================================================
+
+#[test]
+fn result_try_corpus() {
+    assert_lines(
+        "examples/features/result_try.adr",
+        &["ok 5", "err DivByZero", "root 3", "err DivByZero", "err Negative"],
+    );
+}
+
+// ===========================================================================
+// derive Ord (M3) — lexicographic comparisons, in-place sort, min/max on a
+// derived struct, and variant-order comparison + sort on a derived enum.
+// ===========================================================================
+
+#[test]
+fn derive_ord_corpus() {
+    assert_lines(
+        "examples/features/derive_ord.adr",
+        &[
+            "true",
+            "true",
+            "true",
+            "true",
+            "Version(major: 1, minor: 2)",
+            "Version(major: 1, minor: 5)",
+            "Version(major: 2, minor: 0)",
+            "Version(major: 1, minor: 2)",
+            "Version(major: 2, minor: 0)",
+            "true",
+            "[Low, Mid, High]",
+        ],
+    );
+}

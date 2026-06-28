@@ -25,6 +25,9 @@ borrowing, ownership).
 | [02-mvp-scope.md](02-mvp-scope.md) | What ships in the first runnable MVP, and what's deferred | Draft |
 | [03-mvp-grammar.md](03-mvp-grammar.md) | The formal M1 surface grammar (authority for M1 syntax) | Draft |
 | [04-m2-scope.md](04-m2-scope.md) | What ships in Milestone 2 (data-flow core + sugar), and what's deferred | Draft |
+| [05-m2-grammar.md](05-m2-grammar.md) | The M2 surface grammar (deltas to M1) | Draft |
+| [06-m3-scope.md](06-m3-scope.md) | What ships in Milestone 3 (traits + `Result`/`try`), and what's deferred | Draft |
+| [07-m3-grammar.md](07-m3-grammar.md) | The M3 surface grammar (deltas to M1/M2) | Draft |
 
 ## Locked-in decisions (from initial design session)
 

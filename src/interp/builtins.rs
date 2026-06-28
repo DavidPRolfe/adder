@@ -40,7 +40,33 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(Vec::new()))))
             }
+            // M3: the prelude `Result` constructors (spec §9). Each takes exactly
+            // one positional payload and builds the corresponding variant.
+            Builtin::Ok => self.construct_result_variant("Ok", args, span),
+            Builtin::Err => self.construct_result_variant("Err", args, span),
         }
+    }
+
+    /// Build a `Result.Ok(v)` / `Result.Err(v)` instance from a single argument
+    /// (M3; spec §9). A wrong argument count is a runtime error.
+    fn construct_result_variant(
+        &self,
+        variant: &str,
+        args: Vec<Value>,
+        span: Span,
+    ) -> EvalResult {
+        if args.len() != 1 {
+            return Err(Diagnostic::runtime(
+                format!("`{}` takes exactly one argument", variant),
+                span,
+            ));
+        }
+        Ok(Value::Enum(Rc::new(EnumInstance {
+            enum_name: "Result".to_string(),
+            variant: variant.to_string(),
+            payload: args,
+            payload_names: Vec::new(),
+        })))
     }
 
     /// The **built-in method table** for non-user receiver types — `List`,
@@ -227,11 +253,11 @@ impl<'a> Interp<'a> {
             }
             "min" => {
                 arg0(name, &args, span)?;
-                extreme(&items.borrow(), Ordering::Less, span)
+                extreme(&items.borrow(), &self.registry, Ordering::Less, span)
             }
             "max" => {
                 arg0(name, &args, span)?;
-                extreme(&items.borrow(), Ordering::Greater, span)
+                extreme(&items.borrow(), &self.registry, Ordering::Greater, span)
             }
             // -- transforms: slicing ---------------------------------------
             "take" => {
@@ -279,8 +305,16 @@ impl<'a> Interp<'a> {
             "sorted" => {
                 arg0(name, &args, span)?;
                 let mut out = items.borrow().clone();
-                sort_values(&mut out, span)?;
+                sort_values(&mut out, &self.registry, span)?;
                 Ok(list_value(out))
+            }
+            // In-place sort (M3; spec §7.1) — mutates the receiver, returns unit.
+            "sort" => {
+                arg0(name, &args, span)?;
+                let mut out = items.borrow().clone();
+                sort_values(&mut out, &self.registry, span)?;
+                *items.borrow_mut() = out;
+                Ok(Value::Unit)
             }
             // `collect` is the eager identity — the pipeline already produced a
             // concrete list. It returns a fresh list (a copy) for parity with
@@ -627,7 +661,7 @@ fn sum_values(items: &[Value], span: Span) -> EvalResult {
 /// Pick the extreme element by structural ordering: `Ordering::Less` for `min`,
 /// `Ordering::Greater` for `max`. Errors on an empty list or incomparable
 /// elements.
-fn extreme(items: &[Value], want: Ordering, span: Span) -> EvalResult {
+fn extreme(items: &[Value], reg: &Registry, want: Ordering, span: Span) -> EvalResult {
     let mut iter = items.iter();
     let label = if want == Ordering::Less { "min" } else { "max" };
     let mut best = iter
@@ -637,7 +671,7 @@ fn extreme(items: &[Value], want: Ordering, span: Span) -> EvalResult {
         })?
         .clone();
     for v in iter {
-        if compare_values(v, &best, span)? == want {
+        if compare_values(v, &best, reg, span)? == want {
             best = v.clone();
         }
     }
@@ -646,10 +680,10 @@ fn extreme(items: &[Value], want: Ordering, span: Span) -> EvalResult {
 
 /// Sort a slice of values ascending by structural ordering, surfacing the first
 /// incomparable pair as a runtime error.
-fn sort_values(items: &mut [Value], span: Span) -> Result<(), Diagnostic> {
+fn sort_values(items: &mut [Value], reg: &Registry, span: Span) -> Result<(), Diagnostic> {
     // `sort_by` can't carry a `Result`, so capture the first error out-of-band.
     let mut err: Option<Diagnostic> = None;
-    items.sort_by(|a, b| match compare_values(a, b, span) {
+    items.sort_by(|a, b| match compare_values(a, b, reg, span) {
         Ok(ord) => ord,
         Err(d) => {
             if err.is_none() {

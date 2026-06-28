@@ -124,6 +124,10 @@ pub enum Builtin {
     /// `Set()` — constructs an empty set (the `{}` literal is an empty *map*,
     /// so the empty set needs its own spelling; see spec §3).
     Set,
+    /// `Ok(value)` — constructs the prelude `Result.Ok` variant (M3; spec §9).
+    Ok,
+    /// `Err(value)` — constructs the prelude `Result.Err` variant (M3; spec §9).
+    Err,
 }
 
 /// A lexical environment / scope, shared and mutable by reference.

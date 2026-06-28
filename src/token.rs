@@ -167,6 +167,10 @@ pub enum TokenKind {
     Or,
     Not,
     Is,
+    /// `trait` declaration keyword (M3).
+    Trait,
+    /// `try` — the error-propagation prefix operator (M3; spec §9).
+    Try,
     /// The `true` literal (grammar `BOOL`).
     True,
     /// The `false` literal (grammar `BOOL`).

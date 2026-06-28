@@ -104,6 +104,11 @@ impl<'a> NullNarrowing<'a> {
                 }
             }
             StmtKind::Enum(_) => {}
+            StmtKind::Trait(t) => {
+                for m in &t.defaults {
+                    self.check_fn(m);
+                }
+            }
         }
     }
 

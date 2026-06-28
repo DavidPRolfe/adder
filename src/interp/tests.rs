@@ -58,7 +58,7 @@
     /// `print` output, so a discarding sink is sufficient.
     fn fresh() -> (Interp<'static>, Env) {
         let out: &'static mut std::io::Sink = Box::leak(Box::new(std::io::sink()));
-        let interp = Interp { registry: Registry::default(), out };
+        let interp = Interp { registry: Registry::default(), out, propagating: None };
         let root = Scope::new_root();
         seed_prelude(&root);
         (interp, root)
@@ -553,6 +553,7 @@
         // fn main(): x = 1 ; (no assertion on stdout, just that it runs clean)
         let main = FnDecl {
             name: "main".to_string(),
+            type_params: vec![],
             params: vec![],
             returns: None,
             body: block(vec![st(StmtKind::Binding(Binding {
@@ -575,6 +576,7 @@
         // double(21) -> 42
         let double = FnDecl {
             name: "double".to_string(),
+            type_params: vec![],
             params: vec![Param::Named {
                 name: "n".to_string(),
                 ty: Type {
@@ -675,6 +677,8 @@
         // enum Expr: Num(Float)  Add(Expr,Expr)  Mul(Expr,Expr)  Div(Expr,Expr)
         let expr_enum = EnumDecl {
             name: "Expr".to_string(),
+            type_params: vec![],
+            derives: vec![],
             variants: vec![
                 VariantDecl {
                     name: "Num".to_string(),
@@ -781,6 +785,7 @@
 
         let eval_fn = FnDecl {
             name: "eval".to_string(),
+            type_params: vec![],
             params: vec![Param::Named {
                 name: "e".to_string(),
                 ty: Type {
@@ -802,7 +807,7 @@
         };
 
         let mut sink = std::io::sink();
-        let mut interp = Interp { registry: Registry::default(), out: &mut sink };
+        let mut interp = Interp { registry: Registry::default(), out: &mut sink, propagating: None };
         let root = Scope::new_root();
         seed_prelude(&root);
         interp.collect_decls(&program);
@@ -869,6 +874,8 @@
 
         let expr_enum = EnumDecl {
             name: "E".to_string(),
+            type_params: vec![],
+            derives: vec![],
             variants: vec![
                 VariantDecl {
                     name: "Num".to_string(),
@@ -932,6 +939,7 @@
 
         let eval_fn = FnDecl {
             name: "eval".to_string(),
+            type_params: vec![],
             params: vec![Param::Named {
                 name: "e".to_string(),
                 ty: Type {
@@ -951,7 +959,7 @@
             stmts: vec![st(StmtKind::Enum(expr_enum)), st(StmtKind::Fn(eval_fn))],
         };
         let mut sink = std::io::sink();
-        let mut interp = Interp { registry: Registry::default(), out: &mut sink };
+        let mut interp = Interp { registry: Registry::default(), out: &mut sink, propagating: None };
         let root = Scope::new_root();
         seed_prelude(&root);
         interp.collect_decls(&program);
