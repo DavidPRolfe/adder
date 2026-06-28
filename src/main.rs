@@ -12,7 +12,7 @@ fn main() -> ExitCode {
     let path = match args.next() {
         Some(p) => p,
         None => {
-            eprintln!("usage: {prog} <file.adder>");
+            eprintln!("usage: {prog} <file.adr>");
             return ExitCode::FAILURE;
         }
     };

@@ -600,7 +600,7 @@ as a *convention* for "internal," exactly as in Python.
 
 ### 12.1 Files, modules, and packages
 
-- **One file is one module.** A file `geometry/shapes.adder` is the module
+- **One file is one module.** A file `geometry/shapes.adr` is the module
   `geometry.shapes`. The dotted name mirrors the path on disk — no separate manifest
   needed to know what a module is called.
 - **A directory is a package: just a namespace.** `geometry/` groups the modules
@@ -609,10 +609,10 @@ as a *convention* for "internal," exactly as in Python.
 
 ```
 myapp/
-  main.adder             # module `myapp.main`      (program entry point)
+  main.adr             # module `myapp.main`      (program entry point)
   geometry/
-    shapes.adder         # module `myapp.geometry.shapes`
-    transforms.adder     # module `myapp.geometry.transforms`
+    shapes.adr         # module `myapp.geometry.shapes`
+    transforms.adr     # module `myapp.geometry.transforms`
 ```
 
 ### 12.2 Importing
@@ -649,7 +649,7 @@ Running a file executes its top-level statements, then calls its `main` function
 one is defined:
 
 ```adder
-# myapp/main.adder
+# myapp/main.adr
 fn main():
     print("hello")
 ```
