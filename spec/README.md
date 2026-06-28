@@ -23,6 +23,8 @@ borrowing, ownership).
 | [00-design-principles.md](00-design-principles.md) | Vision, non-goals, and the locked-in foundational decisions | Draft |
 | [01-language-reference.md](01-language-reference.md) | Concrete syntax & semantics (the full working language design) | Draft |
 | [02-mvp-scope.md](02-mvp-scope.md) | What ships in the first runnable MVP, and what's deferred | Draft |
+| [03-mvp-grammar.md](03-mvp-grammar.md) | The formal M1 surface grammar (authority for M1 syntax) | Draft |
+| [04-m2-scope.md](04-m2-scope.md) | What ships in Milestone 2 (data-flow core + sugar), and what's deferred | Draft |
 
 ## Locked-in decisions (from initial design session)
 
@@ -35,12 +37,12 @@ borrowing, ownership).
 | Execution model | Tree-walking interpreter first; faster backend later |
 | Abstraction | Traits (with default methods), **no inheritance** |
 | Mutability | Mutable by default |
-| Type annotations | Required on **function signatures** (params + `returns`); inferred for locals |
+| Type annotations | Required on **function signatures** (params + `->` result type); inferred for locals |
 | Null fallback | `x.or_else(default)` (method) — keeps `else` for conditionals only |
-| Function result | `returns` keyword (`fn f(...) returns Int:`); `->` is lambda-only |
+| Function result | `->` arrow (`fn f(...) -> Int:`); the **same** `->` types lambdas and function types; omitted for unit |
 | Concurrency | Deferred to v2 |
-| Audience / domain | General-purpose; a Python successor. Readable to **relative beginners** |
-| Style mandate | **Prefer English keywords to symbols** (`and`/`or`/`not`, `is not null`, `try`, `returns`) |
+| Audience / domain | General-purpose; a Python successor. Optimized for **readability/usability for fluent programmers**, not absolute beginners |
+| Style mandate | **Prefer English keywords to symbols** (`and`/`or`/`not`, `is not null`, `try`) — a tie-breaker, not absolute: universal notation like `->` stays |
 | Integers | Arbitrary precision (no overflow) |
 | First MVP | **Typed-lite** tree-walker — two static checks: match exhaustiveness + null-narrowing (see [02-mvp-scope.md](02-mvp-scope.md)) |
 
@@ -57,7 +59,9 @@ beginner-friendly audience; integers = arbitrary precision; English-over-symbols
 a standing style mandate; `const` dropped (`val` is the only immutable binding);
 module system — Python-style imports, everything importable, directories are pure
 namespaces with no package-entry file, `private` deferred; auto-derived
-`Eq`/`Hash`/`Show` with opt-in `Ord`; signatures fully annotated with `returns`;
+`Eq`/`Hash`/`Show` with opt-in `Ord`; signatures fully annotated (params + `->`
+result type); function results use the `->` arrow with the `returns` keyword dropped
+(M2-scoping decision); audience reframed to fluent programmers over absolute beginners;
 null-fallback is `x.or_else()`; first MVP is typed-lite (exhaustiveness +
 null-narrowing only).*
 
