@@ -116,6 +116,35 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse zero-or-more `parse_item`, comma-separated, tolerating a single
+    /// trailing comma, stopping at (but **not** consuming) `close`. The caller
+    /// performs the closing `expect`/bracket consumption.
+    ///
+    /// Semantics match the hand-rolled comma loops elsewhere in this file: if
+    /// the current token is already `close`, no items are parsed; otherwise an
+    /// item is parsed, then for each `,` consumed a following `close` ends the
+    /// list (trailing comma) and anything else is parsed as the next item.
+    fn parse_separated<T>(
+        &mut self,
+        close: &TokenKind,
+        mut parse_item: impl FnMut(&mut Self) -> PResult<T>,
+    ) -> PResult<Vec<T>> {
+        let mut items = Vec::new();
+        if self.peek() == close {
+            return Ok(items);
+        }
+        loop {
+            items.push(parse_item(self)?);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+            if self.peek() == close {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
     /// Consume a token of the given kind or produce a parse error.
     fn expect(&mut self, kind: &TokenKind, what: &str) -> PResult<&'a Token> {
         if self.peek() == kind {
@@ -344,19 +373,10 @@ impl<'a> Parser<'a> {
     /// and `for` destructuring. The current token is the opening `(`.
     fn parse_tuple_binder(&mut self, ctx: &str) -> PResult<Binder> {
         self.expect(&TokenKind::LParen, "`(` to open a tuple binder")?;
-        let mut names = Vec::new();
-        if !matches!(self.peek(), TokenKind::RParen) {
-            loop {
-                let (n, _) = self.expect_name("a name in the tuple binder")?;
-                names.push(n);
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
-                if matches!(self.peek(), TokenKind::RParen) {
-                    break;
-                }
-            }
-        }
+        let names = self.parse_separated(&TokenKind::RParen, |p| {
+            let (n, _) = p.expect_name("a name in the tuple binder")?;
+            Ok(n)
+        })?;
         self.expect(&TokenKind::RParen, "`)` to close a tuple binder")?;
         if names.len() < 2 {
             return Err(Diagnostic::parse(
@@ -618,11 +638,9 @@ impl<'a> Parser<'a> {
             Ok(Block { stmts, span })
         } else {
             // Inline form: exactly one simple statement.
-            let start = self.cur_span();
             let stmt = self.parse_simple_stmt()?;
             let span = stmt.span;
             self.expect_stmt_newline()?;
-            let _ = start;
             Ok(Block { stmts: vec![stmt], span })
         }
     }
@@ -727,44 +745,28 @@ impl<'a> Parser<'a> {
     /// `param_list = param , …` ; `param = "self" | NAME ":" type [ "=" expr ]`.
     /// A trailing `= expr` is a **default value** (M2 Wave 1).
     fn parse_params(&mut self) -> PResult<Vec<Param>> {
-        let mut params = Vec::new();
-        if matches!(self.peek(), TokenKind::RParen) {
-            return Ok(params);
-        }
-        loop {
-            match self.peek() {
-                TokenKind::SelfKw => {
-                    self.advance();
-                    params.push(Param::SelfRecv);
-                }
-                TokenKind::Name(_) => {
-                    let (name, _) = self.expect_name("a parameter name")?;
-                    self.expect(&TokenKind::Colon, "`:` after the parameter name")?;
-                    let ty = self.parse_type()?;
-                    // Optional default value: `NAME: type = expr` (M2 Wave 1).
-                    let default = if self.eat(&TokenKind::Eq) {
-                        Some(self.parse_expr()?)
-                    } else {
-                        None
-                    };
-                    params.push(Param::Named { name, ty, default });
-                }
-                other => {
-                    return Err(Diagnostic::parse(
-                        format!("expected a parameter, found {}", describe(other)),
-                        self.cur_span(),
-                    ));
-                }
+        self.parse_separated(&TokenKind::RParen, |p| match p.peek() {
+            TokenKind::SelfKw => {
+                p.advance();
+                Ok(Param::SelfRecv)
             }
-            if !self.eat(&TokenKind::Comma) {
-                break;
+            TokenKind::Name(_) => {
+                let (name, _) = p.expect_name("a parameter name")?;
+                p.expect(&TokenKind::Colon, "`:` after the parameter name")?;
+                let ty = p.parse_type()?;
+                // Optional default value: `NAME: type = expr` (M2 Wave 1).
+                let default = if p.eat(&TokenKind::Eq) {
+                    Some(p.parse_expr()?)
+                } else {
+                    None
+                };
+                Ok(Param::Named { name, ty, default })
             }
-            // Allow a trailing comma before `)`.
-            if matches!(self.peek(), TokenKind::RParen) {
-                break;
-            }
-        }
-        Ok(params)
+            other => Err(Diagnostic::parse(
+                format!("expected a parameter, found {}", describe(other)),
+                p.cur_span(),
+            )),
+        })
     }
 
     /// `struct NAME ":" NEWLINE INDENT field_decl+ DEDENT`. Methods are **not**
@@ -862,32 +864,15 @@ impl<'a> Parser<'a> {
             && matches!(self.peek_n(1), TokenKind::Colon);
 
         let payload = if named {
-            let mut fields = Vec::new();
-            loop {
-                let (fname, _) = self.expect_name("a payload field name")?;
-                self.expect(&TokenKind::Colon, "`:` after the payload field name")?;
-                let ty = self.parse_type()?;
-                fields.push((fname, ty));
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
-                if matches!(self.peek(), TokenKind::RParen) {
-                    break;
-                }
-            }
+            let fields = self.parse_separated(&TokenKind::RParen, |p| {
+                let (fname, _) = p.expect_name("a payload field name")?;
+                p.expect(&TokenKind::Colon, "`:` after the payload field name")?;
+                let ty = p.parse_type()?;
+                Ok((fname, ty))
+            })?;
             Payload::Named(fields)
         } else {
-            let mut types = Vec::new();
-            loop {
-                let ty = self.parse_type()?;
-                types.push(ty);
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
-                if matches!(self.peek(), TokenKind::RParen) {
-                    break;
-                }
-            }
+            let types = self.parse_separated(&TokenKind::RParen, Self::parse_type)?;
             Payload::Positional(types)
         };
         let close = self.expect(&TokenKind::RParen, "`)` to close the payload")?;
@@ -978,19 +963,10 @@ impl<'a> Parser<'a> {
             TokenKind::LParen if self.paren_group_is_lambda_params() => {
                 let start = self.cur_span();
                 self.advance(); // `(`
-                let mut params = Vec::new();
-                if !matches!(self.peek(), TokenKind::RParen) {
-                    loop {
-                        let (name, _) = self.expect_name("a lambda parameter")?;
-                        params.push(name);
-                        if !self.eat(&TokenKind::Comma) {
-                            break;
-                        }
-                        if matches!(self.peek(), TokenKind::RParen) {
-                            break;
-                        }
-                    }
-                }
+                let params = self.parse_separated(&TokenKind::RParen, |p| {
+                    let (name, _) = p.expect_name("a lambda parameter")?;
+                    Ok(name)
+                })?;
                 self.expect(&TokenKind::RParen, "`)` to close lambda parameters")?;
                 self.expect(&TokenKind::Arrow, "`->` in a lambda")?;
                 let body = self.parse_expr()?;
@@ -1300,32 +1276,19 @@ impl<'a> Parser<'a> {
 
     /// `arg = expr | NAME ":" expr` (positional / named).
     fn parse_args(&mut self) -> PResult<Vec<Arg>> {
-        let mut args = Vec::new();
-        if matches!(self.peek(), TokenKind::RParen) {
-            return Ok(args);
-        }
-        loop {
+        self.parse_separated(&TokenKind::RParen, |p| {
             // Named arg: `NAME ":" expr`. The `:` after a bare NAME disambiguates
             // from a positional NAME expression.
-            if matches!(self.peek(), TokenKind::Name(_))
-                && matches!(self.peek_n(1), TokenKind::Colon)
-            {
-                let (name, _) = self.expect_name("an argument name")?;
-                self.advance(); // `:`
-                let value = self.parse_expr()?;
-                args.push(Arg::Named { name, value });
+            if matches!(p.peek(), TokenKind::Name(_)) && matches!(p.peek_n(1), TokenKind::Colon) {
+                let (name, _) = p.expect_name("an argument name")?;
+                p.advance(); // `:`
+                let value = p.parse_expr()?;
+                Ok(Arg::Named { name, value })
             } else {
-                let value = self.parse_expr()?;
-                args.push(Arg::Positional(value));
+                let value = p.parse_expr()?;
+                Ok(Arg::Positional(value))
             }
-            if !self.eat(&TokenKind::Comma) {
-                break;
-            }
-            if matches!(self.peek(), TokenKind::RParen) {
-                break;
-            }
-        }
-        Ok(args)
+        })
     }
 
     /// `primary = INT | FLOAT | BOOL | NULL | STRING | self | NAME
@@ -1390,18 +1353,7 @@ impl<'a> Parser<'a> {
             let output = ComprehensionOutput::List(Box::new(self.parse_expr()?));
             return self.finish_comprehension(output, start, &TokenKind::RBracket, "list");
         }
-        let mut items = Vec::new();
-        if !matches!(self.peek(), TokenKind::RBracket) {
-            loop {
-                items.push(self.parse_expr()?);
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
-                if matches!(self.peek(), TokenKind::RBracket) {
-                    break;
-                }
-            }
-        }
+        let items = self.parse_separated(&TokenKind::RBracket, Self::parse_expr)?;
         let close = self.expect(&TokenKind::RBracket, "`]` to close a list literal")?;
         Ok(Expr { kind: ExprKind::List(items), span: start.merge(close.span) })
     }
@@ -1497,8 +1449,13 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let close_tok = self.expect(close, "the bracket closing a comprehension")?;
-        let _ = kind;
+        let close_msg = match kind {
+            "list" => "the bracket closing a list comprehension",
+            "map" => "the bracket closing a map comprehension",
+            "set" => "the bracket closing a set comprehension",
+            _ => "the bracket closing a comprehension",
+        };
+        let close_tok = self.expect(close, close_msg)?;
         Ok(Expr {
             kind: ExprKind::Comprehension(Comprehension {
                 output,
@@ -1793,18 +1750,7 @@ impl<'a> Parser<'a> {
             return Ok((Vec::new(), name_span));
         }
         self.advance(); // `(`
-        let mut subs = Vec::new();
-        if !matches!(self.peek(), TokenKind::RParen) {
-            loop {
-                subs.push(self.parse_pattern()?);
-                if !self.eat(&TokenKind::Comma) {
-                    break;
-                }
-                if matches!(self.peek(), TokenKind::RParen) {
-                    break;
-                }
-            }
-        }
+        let subs = self.parse_separated(&TokenKind::RParen, Self::parse_pattern)?;
         let close = self.expect(&TokenKind::RParen, "`)` to close a variant pattern")?;
         Ok((subs, close.span))
     }
@@ -1851,18 +1797,7 @@ impl<'a> Parser<'a> {
             TokenKind::LParen => {
                 // Parse the parenthesized component list, then decide the shape.
                 self.advance(); // `(`
-                let mut comps = Vec::new();
-                if !matches!(self.peek(), TokenKind::RParen) {
-                    loop {
-                        comps.push(self.parse_type()?);
-                        if !self.eat(&TokenKind::Comma) {
-                            break;
-                        }
-                        if matches!(self.peek(), TokenKind::RParen) {
-                            break;
-                        }
-                    }
-                }
+                let comps = self.parse_separated(&TokenKind::RParen, Self::parse_type)?;
                 self.expect(&TokenKind::RParen, "`)` to close a parenthesized type")?;
 
                 // `(…) -> R` is a function type (any param count, including 0).
@@ -1896,15 +1831,7 @@ impl<'a> Parser<'a> {
                 let mut args = Vec::new();
                 if matches!(self.peek(), TokenKind::LBracket) {
                     self.advance();
-                    loop {
-                        args.push(self.parse_type()?);
-                        if !self.eat(&TokenKind::Comma) {
-                            break;
-                        }
-                        if matches!(self.peek(), TokenKind::RBracket) {
-                            break;
-                        }
-                    }
+                    args = self.parse_separated(&TokenKind::RBracket, Self::parse_type)?;
                     self.expect(&TokenKind::RBracket, "`]` to close type arguments")?;
                 }
                 BaseType::Named { name, args }
