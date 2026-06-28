@@ -1,0 +1,28 @@
+## Null sugar: `?.` safe-call (short-circuiting, including chains) and `.expect`.
+
+struct Address:
+    city: String
+
+struct User:
+    name: String
+    address: Address?
+
+## `?.` reads the field when present and short-circuits to null otherwise.
+fn city_of(u: User?) -> String:
+    return u?.address?.city.or_else("unknown")
+
+fn main():
+    val ada = User(name: "Ada", address: Address(city: "London"))
+    val nameless: User? = null
+
+    # Safe access on a present value walks the chain to the field.
+    print(city_of(ada))            # London
+
+    # Any null link in the chain short-circuits the whole access to null.
+    print(city_of(nameless))       # unknown
+    val no_addr = User(name: "Bo", address: null)
+    print(city_of(no_addr))        # unknown
+
+    # `.expect` asserts a present value and returns it unchanged.
+    val maybe: Int? = 41
+    print(maybe.expect("expected a number") + 1)   # 42

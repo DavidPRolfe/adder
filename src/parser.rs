@@ -1268,9 +1268,19 @@ impl<'a> Parser<'a> {
                         span,
                     };
                 }
-                // `?.` (safe access) is M2 Wave 2 — the token is lexed but the
-                // parser does not yet consume it. TODO(W2-B): handle QuestionDot
-                // here, producing `Member { safe: true, .. }`.
+                // `?.` (safe access, M2 Wave 2): same shape as `.`, but `safe:
+                // true`. A safe method call `x?.m(args)` is a `Call` whose callee
+                // is this safe `Member` — the `LParen` arm above picks it up on
+                // the next loop turn, exactly as for a plain `.m()`.
+                TokenKind::QuestionDot => {
+                    self.advance();
+                    let (name, nspan) = self.expect_name("a member name after `?.`")?;
+                    let span = expr.span.merge(nspan);
+                    expr = Expr {
+                        kind: ExprKind::Member { base: Box::new(expr), name, safe: true },
+                        span,
+                    };
+                }
                 _ => break,
             }
         }
@@ -3040,6 +3050,73 @@ mod tests {
                 other => panic!("expected call inside index, got {:?}", other),
             },
             other => panic!("expected index at top, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn safe_member_access() {
+        // a?.b  -- a safe member access (`safe: true`)
+        let e = parse_expr_tokens(vec![
+            name("a"),
+            t(TokenKind::QuestionDot),
+            name("b"),
+        ]);
+        match &e.kind {
+            ExprKind::Member { name, safe, base } => {
+                assert_eq!(name, "b");
+                assert!(*safe, "`?.` should set safe: true");
+                assert!(matches!(&base.kind, ExprKind::Name(n) if n == "a"));
+            }
+            other => panic!("expected a safe member, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn safe_method_call() {
+        // a?.b(c)  -- a Call whose callee is a safe Member
+        let e = parse_expr_tokens(vec![
+            name("a"),
+            t(TokenKind::QuestionDot),
+            name("b"),
+            t(TokenKind::LParen),
+            name("c"),
+            t(TokenKind::RParen),
+        ]);
+        match &e.kind {
+            ExprKind::Call { callee, args } => {
+                assert_eq!(args.len(), 1);
+                match &callee.kind {
+                    ExprKind::Member { name, safe, .. } => {
+                        assert_eq!(name, "b");
+                        assert!(*safe, "`?.m(...)` callee should be a safe Member");
+                    }
+                    other => panic!("expected safe member callee, got {:?}", other),
+                }
+            }
+            other => panic!("expected a call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn safe_chain_nests_left_to_right() {
+        // a?.b?.c  -- the inner `a?.b` is the base of the outer `?.c`
+        let e = parse_expr_tokens(vec![
+            name("a"),
+            t(TokenKind::QuestionDot),
+            name("b"),
+            t(TokenKind::QuestionDot),
+            name("c"),
+        ]);
+        match &e.kind {
+            ExprKind::Member { name, safe, base } => {
+                assert_eq!(name, "c");
+                assert!(*safe);
+                assert!(matches!(
+                    &base.kind,
+                    ExprKind::Member { name, safe: true, .. } if name == "b"
+                ));
+            }
+            other => panic!("expected an outer safe member, got {:?}", other),
         }
     }
 

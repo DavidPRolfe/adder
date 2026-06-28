@@ -705,8 +705,9 @@ impl<'a> NullNarrowing<'a> {
         match &e.kind {
             ExprKind::Null => NullState::Nullable,
             ExprKind::Name(n) => scope.get(n).copied().unwrap_or(NullState::Unknown),
-            // `x.or_else(default)` always yields a non-null value.
-            ExprKind::Call { callee, .. } if is_or_else_call(callee) => NullState::NonNull,
+            // `x.or_else(default)` and `x.expect(msg)` both yield a non-null
+            // value (the latter `panic`s rather than producing `null`).
+            ExprKind::Call { callee, .. } if is_null_handling_call(callee) => NullState::NonNull,
             // Most other literals/constructions are non-null, but we only need
             // to be sure for flagging; treat unknown to stay conservative about
             // *propagation* (we never flag based on Unknown).
@@ -724,15 +725,14 @@ impl<'a> NullNarrowing<'a> {
     /// calls are covered.
     fn check_expr_uses(&mut self, e: &Expr, scope: &HashMap<String, NullState>) {
         match &e.kind {
-            // Member access / method call: `x.f`. The `or_else` member itself is
-            // a *valid* use of a nullable receiver, so special-case it.
-            // (`?.` safe access — `safe: true` — also handles a nullable
-            // receiver; M2 Wave 2 extends this check to recognise it. TODO(W2-B).)
-            ExprKind::Member { base, name, .. } => {
-                if name == "or_else" {
-                    // `x.or_else` — accessing or_else on a nullable x is allowed.
-                    // Still recurse into base's own sub-structure, but do NOT
-                    // treat a bare nullable name here as a required-T use.
+            // Member access / method call: `x.f`. Three forms *handle* a
+            // nullable receiver and so do NOT require narrowing: `?.` safe access
+            // (`safe: true`), `.or_else`, and `.expect` — see [`handles_null`].
+            ExprKind::Member { base, name, safe } => {
+                if *safe || handles_null(name) {
+                    // The receiver may be nullable here. Still recurse into a
+                    // non-name base, but do NOT treat a bare nullable name as a
+                    // required-T use.
                     if !matches!(base.kind, ExprKind::Name(_)) {
                         self.check_expr_uses(base, scope);
                     }
@@ -742,9 +742,11 @@ impl<'a> NullNarrowing<'a> {
                 }
             }
             ExprKind::Call { callee, args } => {
-                // Detect `x.or_else(d)` — the receiver `x` may be nullable here.
-                if let ExprKind::Member { base, name, .. } = &callee.kind {
-                    if name == "or_else" {
+                // A method call whose callee *handles* null — `x.or_else(d)`,
+                // `x.expect(m)`, or any `x?.m(…)` safe-call — may take a nullable
+                // receiver `x` without narrowing.
+                if let ExprKind::Member { base, name, safe } = &callee.kind {
+                    if *safe || handles_null(name) {
                         // Receiver use is fine even if nullable; recurse into a
                         // non-name base only.
                         if !matches!(base.kind, ExprKind::Name(_)) {
@@ -898,9 +900,18 @@ fn is_not_null_guard(cond: &Expr) -> Option<&str> {
     None
 }
 
-/// True if `callee` is a member access `<something>.or_else`.
-fn is_or_else_call(callee: &Expr) -> bool {
-    matches!(&callee.kind, ExprKind::Member { name, .. } if name == "or_else")
+/// The two methods that consume a nullable receiver and produce a non-null
+/// result: `.or_else(default)` (substitutes the default) and `.expect(msg)`
+/// (asserts non-null, `panic`king otherwise). Both are valid ways to handle a
+/// `T?` and both yield a non-null `T`.
+fn handles_null(name: &str) -> bool {
+    name == "or_else" || name == "expect"
+}
+
+/// True if `callee` is a member access for a null-handling method
+/// (`<something>.or_else` / `<something>.expect`) — see [`handles_null`].
+fn is_null_handling_call(callee: &Expr) -> bool {
+    matches!(&callee.kind, ExprKind::Member { name, .. } if handles_null(name))
 }
 
 // ===========================================================================
@@ -1479,5 +1490,64 @@ mod tests {
         let f = fn_one_param("f", "x", ty_named("Int", true), None, body);
         let p = program(vec![f]);
         assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    // -------- M2 Wave 2-B: `?.` safe-call and `.expect` --------------------
+
+    /// A safe member access on a `T?`, `x?.field`, handles null itself → Ok.
+    #[test]
+    fn null_safe_member_ok() {
+        let safe = expr(ExprKind::Member {
+            base: Box::new(name("x")),
+            name: "field".to_string(),
+            safe: true,
+        });
+        let body = vec![stmt(StmtKind::Expr(safe))];
+        let f = fn_one_param("f", "x", ty_named("Thing", true), None, body);
+        let p = program(vec![f]);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// A safe method call on a `T?`, `x?.m()`, handles null itself → Ok.
+    #[test]
+    fn null_safe_method_call_ok() {
+        let safe_member = expr(ExprKind::Member {
+            base: Box::new(name("x")),
+            name: "m".to_string(),
+            safe: true,
+        });
+        let body = vec![stmt(StmtKind::Expr(call(safe_member, vec![])))];
+        let f = fn_one_param("f", "x", ty_named("Thing", true), None, body);
+        let p = program(vec![f]);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// `x.expect(msg)` on a `T?` yields non-null and is a valid use → Ok, and
+    /// chaining `.field` off the result is fine too.
+    #[test]
+    fn null_expect_ok() {
+        let expect = call(
+            member(name("x"), "expect"),
+            vec![expr(ExprKind::Str(StringLit {
+                parts: vec![StrSeg::Text("required".to_string())],
+            }))],
+        );
+        let use_expr = member(expect, "field");
+        let body = vec![stmt(StmtKind::Expr(use_expr))];
+        let f = fn_one_param("f", "x", ty_named("Thing", true), None, body);
+        let p = program(vec![f]);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// Sanity: a PLAIN member access on the same un-narrowed `T?` still errors,
+    /// so the sugar above did not weaken the M1 check.
+    #[test]
+    fn null_plain_member_still_errors() {
+        let body = vec![stmt(StmtKind::Expr(member(name("x"), "field")))];
+        let f = fn_one_param("f", "x", ty_named("Thing", true), None, body);
+        let p = program(vec![f]);
+        let errs = check_errs(&p);
+        assert_eq!(errs.len(), 1, "plain `.field` must still error, got {:?}", errs);
+        assert!(errs[0].contains("`x`"), "{}", errs[0]);
     }
 }

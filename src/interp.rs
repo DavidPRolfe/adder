@@ -769,12 +769,14 @@ impl Interp {
             ExprKind::Index { base, index } => self.eval_index(base, index, expr.span, env),
             ExprKind::Member { base, name, safe } => {
                 if *safe {
-                    // `?.` safe access is M2 Wave 2.
-                    // TODO(W2-B): yield `null` when `base` is null, else the member.
-                    return Err(Diagnostic::runtime(
-                        "safe-call `?.` is not yet implemented (M2 Wave 2)".to_string(),
-                        expr.span,
-                    ));
+                    // `?.` safe access: if the receiver is `null`, short-circuit
+                    // the whole access to `null` (the member is never read). This
+                    // also makes chains `a?.b?.c` propagate `null` link by link.
+                    let base_v = self.eval(base, env)?;
+                    if matches!(base_v, Value::Null) {
+                        return Ok(Value::Null);
+                    }
+                    return self.member_value(&base_v, name, expr.span);
                 }
                 self.eval_member(base, name, expr.span, env)
             }
@@ -1195,18 +1197,13 @@ impl Interp {
         env: &Env,
     ) -> EvalResult {
         if let ExprKind::Member { base, name, safe } = &callee.kind {
-            // `?.method(...)` safe-call is M2 Wave 2.
-            // TODO(W2-B): implement safe method-call dispatch here.
-            if *safe {
-                return Err(Diagnostic::runtime(
-                    "safe-call `?.` is not yet implemented (M2 Wave 2)".to_string(),
-                    span,
-                ));
-            }
             // Qualified enum-variant construction: `Enum.Variant(args)`. Only
             // when the base names a known enum that isn't shadowed by a value.
+            // `?.` never qualifies an enum (its receiver is a value), so this is
+            // limited to the plain-`.` case.
             if let ExprKind::Name(enum_name) = &base.kind {
-                if env_get(env, enum_name).is_none()
+                if !*safe
+                    && env_get(env, enum_name).is_none()
                     && self.registry.enums.contains_key(enum_name)
                 {
                     return self.construct_variant(enum_name, name, args, span, env);
@@ -1215,6 +1212,13 @@ impl Interp {
 
             // Otherwise it is a method call `recv.method(args)`.
             let recv = self.eval(base, env)?;
+
+            // `?.method(...)` safe-call: a `null` receiver short-circuits the
+            // whole call to `null` — the args are never evaluated and the method
+            // never runs (so a chain `a?.b()?.c()` propagates `null`).
+            if *safe && matches!(recv, Value::Null) {
+                return Ok(Value::Null);
+            }
 
             // Built-in `.or_else(default)` on a possibly-null value.
             if name == "or_else" {
@@ -1516,10 +1520,12 @@ impl Interp {
 
     /// Resolve and call a method `recv.name(args)`.
     ///
-    /// Only user `Struct`/`Enum` receivers resolve to declared `impl` methods.
-    /// All other receiver types (`List`, `Str`, `Map`, `Set`, `Tuple`, and
-    /// range-lists) route to [`Self::call_builtin_method`] — the built-in
-    /// method table that Wave 1-A fills in.
+    /// `.expect(msg)` is intercepted first: it is the null-assertion sugar valid
+    /// on *any* receiver (including `Null` itself), so it cannot live in a
+    /// per-type method table. Only user `Struct`/`Enum` receivers then resolve to
+    /// declared `impl` methods. All other receiver types (`List`, `Str`, `Map`,
+    /// `Set`, `Tuple`, and range-lists) route to [`Self::call_builtin_method`] —
+    /// the built-in method table that Wave 1-A fills in.
     fn call_method(
         &mut self,
         recv: Value,
@@ -1528,6 +1534,30 @@ impl Interp {
         span: Span,
         env: &Env,
     ) -> EvalResult {
+        // `.expect(msg)` — assert non-null. Intercepted before any type-based
+        // routing because it applies to a nullable value of any underlying type
+        // (and to `Null`). A `null` receiver `panic`s with `msg` (a runtime
+        // error, like the `panic` builtin); otherwise the value passes through
+        // unchanged, now known non-null.
+        if name == "expect" {
+            let arg_vals = self.eval_positional_args(args, span, env)?;
+            if arg_vals.len() != 1 {
+                return Err(Diagnostic::runtime(
+                    "`.expect` takes exactly one argument".to_string(),
+                    span,
+                ));
+            }
+            if matches!(recv, Value::Null) {
+                let msg = match arg_vals.first() {
+                    Some(Value::Str(s)) => s.clone(),
+                    Some(v) => show(v),
+                    None => "expect".to_string(),
+                };
+                return Err(Diagnostic::runtime(format!("panic: {}", msg), span));
+            }
+            return Ok(recv);
+        }
+
         let type_name_str = match &recv {
             Value::Struct(s) => s.borrow().type_name.clone(),
             Value::Enum(e) => e.enum_name.clone(),
@@ -2890,6 +2920,31 @@ mod tests {
         }
         match &last.kind {
             StmtKind::Expr(e) => interp.eval(e, &root).expect("final expr should evaluate"),
+            other => panic!("expected a trailing expr statement, got {:?}", other),
+        }
+    }
+
+    /// Like [`eval_src`], but expect the **final** expression to fail at runtime;
+    /// return the diagnostic. Earlier statements must still succeed.
+    fn eval_src_err(src: &str) -> Diagnostic {
+        let toks = crate::lexer::lex(src).expect("source should lex");
+        let program = crate::parser::parse(&toks).expect("source should parse");
+        let (mut interp, root) = fresh();
+        interp.collect_decls(&program);
+        let (last, init) = program
+            .stmts
+            .split_last()
+            .expect("program should have at least one statement");
+        for stmt in init {
+            match interp.exec_stmt(stmt, &root) {
+                Ok(_) => {}
+                Err(d) => panic!("setup statement failed: {}", d.message),
+            }
+        }
+        match &last.kind {
+            StmtKind::Expr(e) => interp
+                .eval(e, &root)
+                .expect_err("final expr should fail at runtime"),
             other => panic!("expected a trailing expr statement, got {:?}", other),
         }
     }
@@ -4507,5 +4562,63 @@ mod tests {
         // A literal sub-pattern only matches a specific payload value.
         let src = "enum Tag:\n    N(Int)\nv = Tag.N(2)\nmatch v:\n    .N(1): 10\n    .N(2): 20\n    .N(x): x\n";
         assert_eq!(as_int(&eval_src(src)), 20);
+    }
+    // ---- M2 Wave 2-B: `?.` safe-call and `.expect` -----------------------
+
+    #[test]
+    fn safe_member_on_null_yields_null() {
+        // x?.field on a null receiver short-circuits to null.
+        let src = "struct P:\n    name: String\nx: P? = null\nx?.name\n";
+        assert!(matches!(eval_src(src), Value::Null));
+    }
+
+    #[test]
+    fn safe_member_on_present_reads_field() {
+        // x?.field on a present struct reads the field like `.`.
+        let src = "struct P:\n    name: String\nx: P? = P(name: \"Ada\")\nx?.name\n";
+        match eval_src(src) {
+            Value::Str(s) => assert_eq!(s, "Ada"),
+            v => panic!("expected String, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn safe_method_call_on_null_yields_null_without_evaluating_args() {
+        // x?.m(panic(...)) on a null receiver must NOT evaluate the args — if it
+        // did, the `panic` would surface as an error.
+        let src =
+            "struct P:\n    name: String\nx: P? = null\nx?.greet(panic(\"boom\"))\n";
+        assert!(matches!(eval_src(src), Value::Null));
+    }
+
+    #[test]
+    fn safe_call_chain_short_circuits() {
+        // a?.b?.c yields null when an inner link is null.
+        let src = "struct Inner:\n    n: Int\nstruct Outer:\n    inner: Inner?\nval o = Outer(inner: null)\no?.inner?.n\n";
+        assert!(matches!(eval_src(src), Value::Null));
+    }
+
+    #[test]
+    fn safe_call_chain_reaches_value_when_present() {
+        let src = "struct Inner:\n    n: Int\nstruct Outer:\n    inner: Inner?\nval o = Outer(inner: Inner(n: 42))\no?.inner?.n\n";
+        assert_eq!(as_int(&eval_src(src)), 42);
+    }
+
+    #[test]
+    fn expect_present_returns_value() {
+        // x.expect(msg) on a present value returns the value unchanged.
+        let src = "val x: Int? = 7\nx.expect(\"required\")\n";
+        assert_eq!(as_int(&eval_src(src)), 7);
+    }
+
+    #[test]
+    fn expect_null_panics_with_message() {
+        // x.expect(msg) on null is a runtime error carrying `msg`.
+        let d = eval_src_err("val x: Int? = null\nx.expect(\"name was required\")\n");
+        assert!(
+            d.message.contains("name was required"),
+            "expect panic should carry the message: {}",
+            d.message
+        );
     }
 }

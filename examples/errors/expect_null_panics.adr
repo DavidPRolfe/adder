@@ -1,0 +1,7 @@
+## `.expect` on a null value is a RUNTIME error (a panic), not a compile-time
+## check error: the program type-checks (`.expect` is a valid way to handle a
+## `T?`) but aborts when the assertion fails at run time.
+
+fn main():
+    val missing: Int? = null
+    print(missing.expect("name was required"))
