@@ -27,7 +27,7 @@ before the program runs, and refactors are safe.
 
 The unifying idea: **types are pervasive but concentrated at the edges.** You write
 them where they earn their keep — on **function signatures** (parameter types and the
-`returns` result type), where they double as documentation and produce better error
+`->` result type), where they double as documentation and produce better error
 messages. *Inside* a function, almost nothing is annotated: locals, literals, and
 lambdas are inferred. So "you rarely write types" is true line-by-line, but honest:
 the annotations live at signatures, not on every binding. (Dropping signature
@@ -36,8 +36,9 @@ not a v1 promise.)
 
 ### Readability over terseness — prefer English to symbols
 
-Because Adder is meant to be legible to less-experienced programmers, where there's
-a genuine choice between a word and a sigil, **the word wins**:
+Adder targets **programmers fluent in mainstream languages**, not absolute beginners;
+"easy" means *readability and usability*, not a teaching language. So where there's a
+genuine choice between a word and a sigil, **the word wins**:
 
 - Logical operators are `and` / `or` / `not`, never `&&` / `||` / `!`.
 - Null checks read as `x is not null`, not `x != null`.
@@ -46,8 +47,11 @@ a genuine choice between a word and a sigil, **the word wins**:
 
 This is a tie-breaker, not an absolute: universally-understood math and comparison
 symbols (`+ - * / < > == <=`) stay, because spelling them out (`plus`, `is greater
-than`) would hurt readability, not help it. The test is always *"would a relative
-beginner read this line correctly out loud and understand it?"*
+than`) would hurt readability, not help it. The same exception covers `->` — the
+function/mapping arrow, read aloud as "maps to" — which every working programmer
+already knows from math and from other languages; a word here (`x gives x + 1`) would
+not read better. The test is always *"would a fluent programmer read this line
+correctly and understand it at a glance?"*
 
 ## 2. The three pillars
 

@@ -58,8 +58,8 @@ deliberate (M1 is "typed-lite", not a full checker).
 Verify any new example against `examples/` and `spec/03-mvp-grammar.md`.
 
 - **Files** use the `.adr` extension.
-- **Functions**: fully annotated — `fn f(a: Int) returns Int:`; omit `returns`
-  for unit. Implicit final-expression return, or explicit `return`.
+- **Functions**: fully annotated — `fn f(a: Int) -> Int:`; omit the arrow for unit.
+  Implicit final-expression return, or explicit `return`.
 - **Bindings**: `val x = e` is immutable; bare `x = e` is mutable. Locals
   inferred; annotate when needed (`xs: List[Int] = []`).
 - **Enums**: variants are namespaced under the enum. Construct `Color.Red` /
