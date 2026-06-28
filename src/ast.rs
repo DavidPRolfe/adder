@@ -188,7 +188,9 @@ pub struct Block {
 pub struct FnDecl {
     pub name: String,
     pub params: Vec<Param>,
-    /// Result type from a `returns T` clause; `None` means unit `()`.
+    /// Result type from a `-> T` clause; `None` means unit `()`. (The field name
+    /// `returns` is kept for stability; the surface syntax is `->` as of M2 —
+    /// the `returns` keyword was dropped.)
     pub returns: Option<Type>,
     pub body: Block,
     /// Doc comment (`##`) captured immediately above, if any.
@@ -202,8 +204,14 @@ pub enum Param {
     /// The `self` receiver — only valid as the first param of a method
     /// (validity resolved by checks/interp). Untyped.
     SelfRecv,
-    /// A fully annotated positional parameter `NAME: type`.
-    Named { name: String, ty: Type },
+    /// A fully annotated positional parameter `NAME: type`, with an optional
+    /// **default value** `NAME: type = expr` (M2 Wave 1). The parser produces
+    /// `default: None` until default args are wired up in Wave 1.
+    Named {
+        name: String,
+        ty: Type,
+        default: Option<Expr>,
+    },
 }
 
 /// A struct declaration (grammar §4.4): a set of fields. Methods are defined
@@ -337,15 +345,37 @@ pub enum ExprKind {
         index: Box<Expr>,
     },
 
-    /// A member access `base.name` (grammar §5.5).
+    /// A member access `base.name` (grammar §5.5), or the **safe-call**
+    /// `base?.name` (M2 Wave 2) when `safe` is `true`. A safe access yields
+    /// `null` if `base` is `null` instead of erroring. All M1 constructions set
+    /// `safe: false`.
     Member {
         base: Box<Expr>,
         name: String,
+        /// `true` for `?.` (safe access); `false` for plain `.`.
+        safe: bool,
     },
 
     /// A `match` expression (grammar §5.7). `match` is an expression and may
     /// appear wherever a primary is allowed.
     Match(MatchExpr),
+
+    // ----- Collections & comprehensions (M2; spec §3, §11) -----
+    /// A map literal `{ k: v, … }` (M2). Insertion-ordered key/value pairs.
+    /// `{}` is an empty **map** (an empty set is spelled `Set()`).
+    Map(Vec<(Expr, Expr)>),
+
+    /// A set literal `{ x, … }` (M2). At least one element (the empty case is a
+    /// `Map`, so `{}` never parses as a set).
+    Set(Vec<Expr>),
+
+    /// A tuple literal `(a, b, …)` (M2). Always has at least two elements — a
+    /// single parenthesized expression is grouping, not a 1-tuple.
+    Tuple(Vec<Expr>),
+
+    /// A comprehension `[out for binder in iter (if cond)?]` and its map/set
+    /// forms (M2). See [`Comprehension`].
+    Comprehension(Comprehension),
 }
 
 /// A string literal as a sequence of segments (grammar §1.5).
@@ -390,6 +420,49 @@ pub enum Arg {
     Positional(Expr),
     /// A named argument `name: expr`.
     Named { name: String, value: Expr },
+}
+
+/// A comprehension (M2; spec §11): sugar over a single `for` loop that builds a
+/// list, set, or map. The general shape is
+/// `OUTPUT for BINDER in ITER [ if COND ]`, wrapped in `[ ]` (list/`{ }` for
+/// set/map). The binder is scoped to the comprehension.
+///
+/// The collection kind is carried by [`Comprehension::output`]:
+/// - `[expr for …]`          → [`ComprehensionOutput::List`]
+/// - `{expr for …}`          → [`ComprehensionOutput::Set`]
+/// - `{key: value for …}`    → [`ComprehensionOutput::Map`]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Comprehension {
+    /// What each iteration produces (and thus the collection kind).
+    pub output: ComprehensionOutput,
+    /// The loop binder, scoped to the comprehension.
+    pub binder: ComprehensionBinder,
+    /// The iterable being walked.
+    pub iter: Box<Expr>,
+    /// An optional `if COND` filter; only matching elements contribute.
+    pub cond: Option<Box<Expr>>,
+}
+
+/// The per-element output of a [`Comprehension`], which also selects the built
+/// collection kind.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComprehensionOutput {
+    /// `[expr for …]` — a `List` of `expr`.
+    List(Box<Expr>),
+    /// `{expr for …}` — a `Set` of `expr`.
+    Set(Box<Expr>),
+    /// `{key: value for …}` — a `Map` from `key` to `value`.
+    Map { key: Box<Expr>, value: Box<Expr> },
+}
+
+/// The binder of a [`Comprehension`]: either a single name or a tuple of names
+/// destructured from each element (e.g. `for (k, v) in map.items()`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComprehensionBinder {
+    /// `for x in …` — binds the whole element to `x`.
+    Name(String),
+    /// `for (a, b, …) in …` — destructures a tuple element into names.
+    Tuple(Vec<String>),
 }
 
 /// Binary operators (grammar §5.3–§5.4).
@@ -446,24 +519,33 @@ pub struct MatchExpr {
     pub arms: Vec<MatchArm>,
 }
 
-/// One `pattern: arm_body` arm of a match (grammar §5.7).
+/// One `pattern [if guard]: arm_body` arm of a match (grammar §5.7).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    /// An optional `if COND` **match guard** (M2 Wave 2). A guarded arm does not
+    /// count toward exhaustiveness ([`crate::checks`]). The parser produces
+    /// `None` until guards are wired up in Wave 2.
+    pub guard: Option<Expr>,
     /// The arm body. Its *value* is its final expression (a semantic rule
     /// resolved by [`crate::interp`]).
     pub body: Block,
     pub span: Span,
 }
 
-/// A pattern node: a [`PatternKind`] plus its span (grammar §5.8, flat only).
+/// A pattern node: a [`PatternKind`] plus its span (grammar §5.8).
+///
+/// As of M2, patterns are **recursive**: a variant's sub-patterns (and tuple
+/// elements) are themselves full [`Pattern`]s, so nested destructuring like
+/// `.Some(.Pair(a, b))` is representable. The previously-flat M1 cases (`_`, a
+/// name, `null`, a literal) are the base [`PatternKind`] variants.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
     pub kind: PatternKind,
     pub span: Span,
 }
 
-/// A top-level pattern (grammar §5.8). M1 patterns are **flat**.
+/// A pattern (grammar §5.8). Recursive as of M2.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternKind {
     /// `_` — wildcard, matches anything without binding.
@@ -474,32 +556,28 @@ pub enum PatternKind {
     Literal(LitPattern),
     /// A bare `NAME` — binds the whole scrutinee.
     Binding(String),
-    /// A single-level variant destructure. Variants are **qualified**: either
-    /// the leading-dot form `.Variant(sub, …)` (enum inferred from the
+    /// A variant destructure, possibly **nested**. Variants are **qualified**:
+    /// either the leading-dot form `.Variant(sub, …)` (enum inferred from the
     /// scrutinee) or the explicit `Enum.Variant(sub, …)`. A niladic variant
     /// drops the parentheses (`.Empty` / `Enum.Empty`). A *bare* `NAME(…)` is
     /// no longer a variant pattern (a bare `NAME` is a [`PatternKind::Binding`]).
+    ///
+    /// As of M2, `subs` are full [`Pattern`]s, so a sub-pattern may itself be a
+    /// variant/tuple/or pattern (nested destructuring).
     Variant {
         /// `Some("Color")` for the qualified form `Color.Red`; `None` for the
         /// leading-dot form `.Red`, resolved against the scrutinee's enum.
         enum_name: Option<String>,
         name: String,
-        subs: Vec<SubPattern>,
+        subs: Vec<Pattern>,
     },
-}
-
-/// A sub-pattern inside a variant pattern (grammar §5.8). "Simple bindings"
-/// only — **no nesting**.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SubPattern {
-    /// `_`
-    Wildcard,
-    /// A binding name.
-    Binding(String),
-    /// `null`
-    Null,
-    /// A literal.
-    Literal(LitPattern),
+    /// An **or-pattern** `p1 or p2 or …` (M2 Wave 2): matches if any alternative
+    /// matches. Alternatives bind the same names (enforced later). The parser
+    /// produces this only once or-patterns are wired up in Wave 2.
+    Or(Vec<Pattern>),
+    /// A **tuple pattern** `(p1, p2, …)` (M2 Wave 2): destructures a tuple value
+    /// element-wise. Always two or more elements.
+    Tuple(Vec<Pattern>),
 }
 
 /// A literal usable in a pattern (grammar §5.8).
@@ -537,4 +615,16 @@ pub enum BaseType {
     Named { name: String, args: Vec<Type> },
     /// The unit type `()`.
     Unit,
+    /// A **function type** `(T1, …, Tn) -> R` (M2; spec §6). Zero params is
+    /// `() -> R`. Parsed and used for documentation/parameter signatures, but
+    /// not statically checked in M2 (typed-lite — see `spec/04-m2-scope.md`).
+    Fn {
+        /// The parameter types (possibly empty).
+        params: Vec<Type>,
+        /// The result type. Always present (`-> R`); unit results are `()`.
+        ret: Box<Type>,
+    },
+    /// A **tuple type** `(A, B, …)` (M2; spec §6). Always has at least two
+    /// components — `(T)` is grouping, not a 1-tuple.
+    Tuple(Vec<Type>),
 }

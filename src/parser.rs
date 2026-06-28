@@ -614,7 +614,10 @@ impl<'a> Parser<'a> {
         Ok(Stmt { kind: StmtKind::For(ForStmt { var, iter, body }), span })
     }
 
-    /// `fn NAME "(" [param_list] ")" [returns type] ":" suite`.
+    /// `fn NAME "(" [param_list] ")" [ "->" type ] ":" suite`.
+    ///
+    /// The result clause is `-> type` (M2; the M1 `returns` keyword was
+    /// dropped). A function with no `->` returns unit, exactly as before.
     fn parse_fn_decl(&mut self) -> PResult<FnDecl> {
         let start = self.cur_span();
         let doc = self.cur_doc();
@@ -624,7 +627,7 @@ impl<'a> Parser<'a> {
         let params = self.parse_params()?;
         self.expect(&TokenKind::RParen, "`)` to close the parameter list")?;
 
-        let returns = if matches!(self.peek(), TokenKind::Returns) {
+        let returns = if matches!(self.peek(), TokenKind::Arrow) {
             self.advance();
             Some(self.parse_type()?)
         } else {
@@ -653,7 +656,10 @@ impl<'a> Parser<'a> {
                     let (name, _) = self.expect_name("a parameter name")?;
                     self.expect(&TokenKind::Colon, "`:` after the parameter name")?;
                     let ty = self.parse_type()?;
-                    params.push(Param::Named { name, ty });
+                    // Default values (`= expr`) are M2 Wave 1; until then the
+                    // parser always produces `default: None`.
+                    // TODO(W1-B): parse an optional `"=" expr` default here.
+                    params.push(Param::Named { name, ty, default: None });
                 }
                 other => {
                     return Err(Diagnostic::parse(
@@ -1181,10 +1187,13 @@ impl<'a> Parser<'a> {
                     let (name, nspan) = self.expect_name("a member name after `.`")?;
                     let span = expr.span.merge(nspan);
                     expr = Expr {
-                        kind: ExprKind::Member { base: Box::new(expr), name },
+                        kind: ExprKind::Member { base: Box::new(expr), name, safe: false },
                         span,
                     };
                 }
+                // `?.` (safe access) is M2 Wave 2 — the token is lexed but the
+                // parser does not yet consume it. TODO(W2-B): handle QuestionDot
+                // here, producing `Member { safe: true, .. }`.
                 _ => break,
             }
         }
@@ -1342,14 +1351,23 @@ impl<'a> Parser<'a> {
         };
 
         let span = start.merge(body.span);
-        Ok(MatchArm { pattern, body, span })
+        // Match guards (`pattern if cond:`) are M2 Wave 2 — the parser produces
+        // `guard: None` for now.
+        // TODO(W2-A): parse an optional `if cond` guard before the `:`.
+        Ok(MatchArm { pattern, guard: None, body, span })
     }
 
     // =====================================================================
-    // Patterns (§5.8) — flat
+    // Patterns (§5.8) — recursive as of M2
     // =====================================================================
 
     /// `pattern = "_" | NULL | literal_pattern | NAME | variant_pattern`.
+    ///
+    /// Or-patterns (`p1 or p2`) and tuple patterns (`(p1, p2)`) are M2 Wave 2
+    /// and are not parsed here yet, though the AST ([`PatternKind::Or`] /
+    /// [`PatternKind::Tuple`]) can represent them. Variant sub-patterns are
+    /// recursive, so nested destructuring already parses.
+    // TODO(W2-A): parse or-patterns and tuple patterns here.
     fn parse_pattern(&mut self) -> PResult<Pattern> {
         let span = self.cur_span();
         match self.peek().clone() {
@@ -1435,10 +1453,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse the optional `"(" sub_pattern , … ")"` payload of a variant pattern.
+    /// Parse the optional `"(" pattern , … ")"` payload of a variant pattern.
     /// A niladic variant (no parens) yields an empty `subs` list. Returns the
     /// sub-patterns and the span of the variant's last token.
-    fn parse_variant_subs(&mut self, name_span: Span) -> PResult<(Vec<SubPattern>, Span)> {
+    ///
+    /// As of M2 the sub-patterns are full [`Pattern`]s (recursive), so a
+    /// variant's payload may itself contain variant/tuple/or patterns (nested
+    /// destructuring). The flat M1 cases (`_`, a name, `null`, a literal) are
+    /// produced unchanged because [`Self::parse_pattern`] yields the same base
+    /// kinds for them.
+    fn parse_variant_subs(&mut self, name_span: Span) -> PResult<(Vec<Pattern>, Span)> {
         if !matches!(self.peek(), TokenKind::LParen) {
             return Ok((Vec::new(), name_span));
         }
@@ -1446,7 +1470,7 @@ impl<'a> Parser<'a> {
         let mut subs = Vec::new();
         if !matches!(self.peek(), TokenKind::RParen) {
             loop {
-                subs.push(self.parse_sub_pattern()?);
+                subs.push(self.parse_pattern()?);
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -1457,63 +1481,6 @@ impl<'a> Parser<'a> {
         }
         let close = self.expect(&TokenKind::RParen, "`)` to close a variant pattern")?;
         Ok((subs, close.span))
-    }
-
-    /// `sub_pattern = "_" | NAME | NULL | literal_pattern` — no nesting.
-    fn parse_sub_pattern(&mut self) -> PResult<SubPattern> {
-        let span = self.cur_span();
-        match self.peek().clone() {
-            TokenKind::Null => {
-                self.advance();
-                Ok(SubPattern::Null)
-            }
-            TokenKind::Int(n) => {
-                self.advance();
-                Ok(SubPattern::Literal(LitPattern::Int(n)))
-            }
-            TokenKind::Float(f) => {
-                self.advance();
-                Ok(SubPattern::Literal(LitPattern::Float(f)))
-            }
-            TokenKind::True => {
-                self.advance();
-                Ok(SubPattern::Literal(LitPattern::Bool(true)))
-            }
-            TokenKind::False => {
-                self.advance();
-                Ok(SubPattern::Literal(LitPattern::Bool(false)))
-            }
-            TokenKind::Str(parts) => {
-                self.advance();
-                let s = string_parts_as_literal(&parts).ok_or_else(|| {
-                    Diagnostic::parse(
-                        "a string pattern may not contain interpolation",
-                        span,
-                    )
-                })?;
-                Ok(SubPattern::Literal(LitPattern::Str(s)))
-            }
-            TokenKind::Name(name) => {
-                self.advance();
-                if name == "_" {
-                    Ok(SubPattern::Wildcard)
-                } else {
-                    // No nested variant patterns: a `(` here is a syntax error.
-                    if matches!(self.peek(), TokenKind::LParen) {
-                        return Err(Diagnostic::parse(
-                            "nested variant patterns are not allowed in M1 \
-                             (sub-patterns are `_`, a name, `null`, or a literal)",
-                            self.cur_span(),
-                        ));
-                    }
-                    Ok(SubPattern::Binding(name))
-                }
-            }
-            other => Err(Diagnostic::parse(
-                format!("expected a simple sub-pattern, found {}", describe(&other)),
-                span,
-            )),
-        }
     }
 
     // =====================================================================
@@ -1672,7 +1639,6 @@ fn describe(kind: &TokenKind) -> String {
         TokenKind::Enum => "`enum`".into(),
         TokenKind::Impl => "`impl`".into(),
         TokenKind::Return => "`return`".into(),
-        TokenKind::Returns => "`returns`".into(),
         TokenKind::If => "`if`".into(),
         TokenKind::Elif => "`elif`".into(),
         TokenKind::Else => "`else`".into(),
@@ -1716,6 +1682,7 @@ fn describe(kind: &TokenKind) -> String {
         TokenKind::LBrace => "`{`".into(),
         TokenKind::RBrace => "`}`".into(),
         TokenKind::Question => "`?`".into(),
+        TokenKind::QuestionDot => "`?.`".into(),
         TokenKind::Newline => "end of line".into(),
         TokenKind::Indent => "an indent".into(),
         TokenKind::Dedent => "a dedent".into(),
@@ -2021,11 +1988,11 @@ mod tests {
         }
     }
 
-    // ----- fn with params + returns --------------------------------------
+    // ----- fn with params + result type (`->`) ---------------------------
 
     #[test]
     fn fn_with_params_and_returns() {
-        // fn add(a: Int, b: Int) returns Int:
+        // fn add(a: Int, b: Int) -> Int:
         //     return a
         let toks = vec![
             t(TokenKind::Fn),
@@ -2039,7 +2006,7 @@ mod tests {
             t(TokenKind::Colon),
             name("Int"),
             t(TokenKind::RParen),
-            t(TokenKind::Returns),
+            t(TokenKind::Arrow),
             name("Int"),
             t(TokenKind::Colon),
             nl(),
@@ -2556,9 +2523,9 @@ mod tests {
                     assert_eq!(enum_name.as_deref(), Some("E"));
                     assert_eq!(name, "V");
                     assert_eq!(subs.len(), 3);
-                    assert!(matches!(subs[0], SubPattern::Wildcard));
-                    assert!(matches!(subs[1], SubPattern::Null));
-                    assert!(matches!(&subs[2], SubPattern::Literal(LitPattern::Int(_))));
+                    assert!(matches!(subs[0].kind, PatternKind::Wildcard));
+                    assert!(matches!(subs[1].kind, PatternKind::Null));
+                    assert!(matches!(&subs[2].kind, PatternKind::Literal(LitPattern::Int(_))));
                 }
                 other => panic!("expected variant pattern, got {:?}", other),
             },
@@ -2640,13 +2607,13 @@ mod tests {
 
     #[test]
     fn unit_type() {
-        // fn f() returns (): 0   -- the `()` unit type after `returns`
+        // fn f() -> (): 0   -- the `()` unit type after `->`
         let toks = vec![
             t(TokenKind::Fn),
             name("f"),
             t(TokenKind::LParen),
             t(TokenKind::RParen),
-            t(TokenKind::Returns),
+            t(TokenKind::Arrow),
             t(TokenKind::LParen),
             t(TokenKind::RParen),
             t(TokenKind::Colon),
@@ -2850,7 +2817,7 @@ mod tests {
         // Regression: a program with NO doc comments parses with every `doc`
         // field `None` and nothing else perturbed.
         let bare = parse_src(
-            "enum Expr:\n    Num(Float)\n    Add(Expr, Expr)\n\nfn eval(e: Expr) returns Float:\n    1\n",
+            "enum Expr:\n    Num(Float)\n    Add(Expr, Expr)\n\nfn eval(e: Expr) -> Float:\n    1\n",
         );
         assert_eq!(bare.stmts.len(), 2);
         for stmt in &bare.stmts {

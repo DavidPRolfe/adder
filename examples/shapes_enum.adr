@@ -5,7 +5,7 @@ enum Shape:
     Rect(w: Float, h: Float)
     Unit                          # a niladic variant — no payload
 
-fn area(s: Shape) returns Float:
+fn area(s: Shape) -> Float:
     return match s:
         .Circle(r):  3.14159 * r * r     # leading-dot: enum inferred from scrutinee
         .Rect(w, h): w * h

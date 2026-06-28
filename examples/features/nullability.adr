@@ -1,17 +1,17 @@
 ## Nullability: T?, null, `is not null` narrowing, and .or_else(default).
 
 ## Uses `is not null` to narrow x from Int? to Int inside the branch.
-fn add_one(x: Int?) returns Int:
+fn add_one(x: Int?) -> Int:
     if x is not null:
         return x + 1       # narrowed: x is Int here
     return 0
 
 ## Defaults a possibly-null value with .or_else(default).
-fn with_default(x: Int?) returns Int:
+fn with_default(x: Int?) -> Int:
     return x.or_else(-1)
 
 ## Narrowing combined with an else branch.
-fn describe(name: String?) returns String:
+fn describe(name: String?) -> String:
     if name is not null:
         return "hello {name}"
     return "anonymous"

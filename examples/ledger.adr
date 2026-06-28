@@ -15,7 +15,7 @@ struct Account:
 
 impl Account:
     ## The signed effect of a transaction on THIS account's balance.
-    fn effect(self, t: Tx) returns Int:
+    fn effect(self, t: Tx) -> Int:
         return match t:
             .Deposit(amount):      amount
             .Withdraw(amount):     -amount
@@ -29,11 +29,11 @@ impl Account:
             panic("overdraft on {self.owner}'s account")
         self.balance = self.balance + delta
 
-    fn describe(self) returns String:
+    fn describe(self) -> String:
         return "{self.owner}: {self.balance} credits"
 
 ## A human-readable label for a transaction (drives the printed log).
-fn label(t: Tx) returns String:
+fn label(t: Tx) -> String:
     return match t:
         .Deposit(amount):      "deposit {amount}"
         .Withdraw(amount):     "withdraw {amount}"
@@ -41,7 +41,7 @@ fn label(t: Tx) returns String:
         .Open:                 "open account"
 
 ## Find an account by owner. Returns null when nobody matches (T? result).
-fn find(accounts: List[Account], owner: String) returns Account?:
+fn find(accounts: List[Account], owner: String) -> Account?:
     for a in accounts:
         if a.owner is owner:
             return a

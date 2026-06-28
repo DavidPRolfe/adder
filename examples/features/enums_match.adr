@@ -8,7 +8,7 @@ enum Shape:
     Rect(w: Float, h: Float)      # named payload (two fields)
     Pair(Float, Float)            # positional payload
 
-fn area(s: Shape) returns Float:
+fn area(s: Shape) -> Float:
     # Exhaustive match (all four variants covered).
     return match s:
         .Unit:        1.0                 # leading-dot arm
@@ -16,7 +16,7 @@ fn area(s: Shape) returns Float:
         Shape.Rect(w, h): w * h           # explicit-qualified arm
         Shape.Pair(a, b): a + b           # explicit-qualified arm
 
-fn label(s: Shape) returns String:
+fn label(s: Shape) -> String:
     # A match that uses a catch-all binding arm (bare NAME = binding).
     return match s:
         .Unit: "unit"

@@ -254,7 +254,7 @@ impl<'a> Exhaustiveness<'a> {
     fn check_fn(&mut self, decl: &FnDecl) {
         let mut scope: HashMap<String, ResolvedTy> = HashMap::new();
         for p in &decl.params {
-            if let Param::Named { name, ty } = p {
+            if let Param::Named { name, ty, .. } = p {
                 let rt = match self.enums.enum_name_of_type(ty) {
                     // A *nullable* enum param isn't a plain enum value, so don't
                     // treat it as exhaustively-matchable directly.
@@ -354,6 +354,24 @@ impl<'a> Exhaustiveness<'a> {
                     }
                 }
             }
+            // M2 collections / comprehensions: recurse so nested `match`es are
+            // still checked. These never resolve to an enum type themselves.
+            ExprKind::Map(pairs) => {
+                for (k, v) in pairs {
+                    self.check_expr(k, scope);
+                    self.check_expr(v, scope);
+                }
+            }
+            ExprKind::Set(items) | ExprKind::Tuple(items) => {
+                for it in items {
+                    self.check_expr(it, scope);
+                }
+            }
+            ExprKind::Comprehension(c) => {
+                self.check_comprehension_exprs(c, scope, &mut |this, e, sc| {
+                    this.check_expr(e, sc)
+                });
+            }
             // Leaves.
             ExprKind::Int(_)
             | ExprKind::Float(_)
@@ -361,6 +379,30 @@ impl<'a> Exhaustiveness<'a> {
             | ExprKind::Null
             | ExprKind::Name(_)
             | ExprKind::SelfExpr => {}
+        }
+    }
+
+    /// Recurse into a comprehension's sub-expressions (output, iterable, filter)
+    /// with `visit`. The binder is scoped to the comprehension but is of unknown
+    /// type to this lightweight pass, so we do not add it to `scope`.
+    /// TODO(W1-B): once comprehensions evaluate, revisit scoping if needed.
+    fn check_comprehension_exprs(
+        &mut self,
+        c: &crate::ast::Comprehension,
+        scope: &HashMap<String, ResolvedTy>,
+        visit: &mut dyn FnMut(&mut Self, &Expr, &HashMap<String, ResolvedTy>),
+    ) {
+        use crate::ast::ComprehensionOutput::*;
+        match &c.output {
+            List(e) | Set(e) => visit(self, e, scope),
+            Map { key, value } => {
+                visit(self, key, scope);
+                visit(self, value, scope);
+            }
+        }
+        visit(self, &c.iter, scope);
+        if let Some(cond) = &c.cond {
+            visit(self, cond, scope);
         }
     }
 
@@ -385,6 +427,14 @@ impl<'a> Exhaustiveness<'a> {
         let mut has_catch_all = false;
 
         for arm in &m.arms {
+            // A *guarded* arm (`pattern if cond:`) may not fire, so it does not
+            // contribute to exhaustiveness — skip its coverage entirely (M2). The
+            // parser produces `guard: None` until Wave 2, so today this is a
+            // no-op; it is here so guarded arms behave correctly once wired up.
+            // TODO(W2-A): revisit once guards are parsed.
+            if arm.guard.is_some() {
+                continue;
+            }
             match &arm.pattern.kind {
                 PatternKind::Wildcard => has_catch_all = true,
                 PatternKind::Binding(_) => has_catch_all = true, // bare NAME matches anything
@@ -423,6 +473,12 @@ impl<'a> Exhaustiveness<'a> {
                 }
                 // null and literal patterns never cover an enum variant.
                 PatternKind::Null | PatternKind::Literal(_) => {}
+                // Or-patterns and tuple patterns are M2 Wave 2. For now they
+                // contribute no coverage (conservative — they never *over*-claim
+                // exhaustiveness). The parser does not yet produce them.
+                // TODO(W2-A): an or-pattern should count each alternative's
+                // variant toward coverage; a tuple pattern never covers an enum.
+                PatternKind::Or(_) | PatternKind::Tuple(_) => {}
             }
         }
 
@@ -545,7 +601,7 @@ impl<'a> NullNarrowing<'a> {
     fn check_fn(&mut self, decl: &FnDecl) {
         let mut scope: HashMap<String, NullState> = HashMap::new();
         for p in &decl.params {
-            if let Param::Named { name, ty } = p {
+            if let Param::Named { name, ty, .. } = p {
                 let st = if ty.nullable { NullState::Nullable } else { NullState::NonNull };
                 scope.insert(name.clone(), st);
             }
@@ -611,7 +667,9 @@ impl<'a> NullNarrowing<'a> {
         match &e.kind {
             // Member access / method call: `x.f`. The `or_else` member itself is
             // a *valid* use of a nullable receiver, so special-case it.
-            ExprKind::Member { base, name } => {
+            // (`?.` safe access — `safe: true` — also handles a nullable
+            // receiver; M2 Wave 2 extends this check to recognise it. TODO(W2-B).)
+            ExprKind::Member { base, name, .. } => {
                 if name == "or_else" {
                     // `x.or_else` — accessing or_else on a nullable x is allowed.
                     // Still recurse into base's own sub-structure, but do NOT
@@ -626,7 +684,7 @@ impl<'a> NullNarrowing<'a> {
             }
             ExprKind::Call { callee, args } => {
                 // Detect `x.or_else(d)` — the receiver `x` may be nullable here.
-                if let ExprKind::Member { base, name } = &callee.kind {
+                if let ExprKind::Member { base, name, .. } = &callee.kind {
                     if name == "or_else" {
                         // Receiver use is fine even if nullable; recurse into a
                         // non-name base only.
@@ -703,6 +761,32 @@ impl<'a> NullNarrowing<'a> {
                     if let crate::ast::StrSeg::Expr(inner) = part {
                         self.check_expr_uses(inner, scope);
                     }
+                }
+            }
+            // M2 collections / comprehensions: recurse into sub-expressions.
+            ExprKind::Map(pairs) => {
+                for (k, v) in pairs {
+                    self.check_expr_uses(k, scope);
+                    self.check_expr_uses(v, scope);
+                }
+            }
+            ExprKind::Set(items) | ExprKind::Tuple(items) => {
+                for it in items {
+                    self.check_expr_uses(it, scope);
+                }
+            }
+            ExprKind::Comprehension(c) => {
+                use crate::ast::ComprehensionOutput::*;
+                match &c.output {
+                    List(e) | Set(e) => self.check_expr_uses(e, scope),
+                    Map { key, value } => {
+                        self.check_expr_uses(key, scope);
+                        self.check_expr_uses(value, scope);
+                    }
+                }
+                self.check_expr_uses(&c.iter, scope);
+                if let Some(cond) = &c.cond {
+                    self.check_expr_uses(cond, scope);
                 }
             }
             // Leaves — a bare name reference on its own does not "require T".
@@ -792,7 +876,7 @@ mod tests {
     }
 
     fn member(base: Expr, n: &str) -> Expr {
-        expr(ExprKind::Member { base: Box::new(base), name: n.to_string() })
+        expr(ExprKind::Member { base: Box::new(base), name: n.to_string(), safe: false })
     }
 
     fn stmt(kind: StmtKind) -> Stmt {
@@ -826,10 +910,17 @@ mod tests {
                 kind: PatternKind::Variant {
                     enum_name: None,
                     name: name.to_string(),
-                    subs: binds.iter().map(|b| SubPattern::Binding(b.to_string())).collect(),
+                    subs: binds
+                        .iter()
+                        .map(|b| Pattern {
+                            kind: PatternKind::Binding(b.to_string()),
+                            span: sp(),
+                        })
+                        .collect(),
                 },
                 span: sp(),
             },
+            guard: None,
             body: block(vec![stmt(StmtKind::Expr(body))]),
             span: sp(),
         }
@@ -838,6 +929,7 @@ mod tests {
     fn wildcard_arm(body: Expr) -> MatchArm {
         MatchArm {
             pattern: Pattern { kind: PatternKind::Wildcard, span: sp() },
+            guard: None,
             body: block(vec![stmt(StmtKind::Expr(body))]),
             span: sp(),
         }
@@ -857,7 +949,7 @@ mod tests {
     ) -> Stmt {
         stmt(StmtKind::Fn(FnDecl {
             name: fname.to_string(),
-            params: vec![Param::Named { name: pname.to_string(), ty: pty }],
+            params: vec![Param::Named { name: pname.to_string(), ty: pty, default: None }],
             returns,
             body: block(body),
             doc: None,
@@ -961,6 +1053,7 @@ mod tests {
         let expr_enum = enum_decl("Color", &[("Red", 0), ("Green", 0), ("Blue", 0)]);
         let other_arm = MatchArm {
             pattern: Pattern { kind: PatternKind::Binding("other".to_string()), span: sp() },
+            guard: None,
             body: block(vec![stmt(StmtKind::Expr(name("other")))]),
             span: sp(),
         };
@@ -991,6 +1084,7 @@ mod tests {
                     kind: PatternKind::Literal(LitPattern::Int(BigInt::from(0))),
                     span: sp(),
                 },
+                guard: None,
                 body: block(vec![stmt(StmtKind::Expr(name("x")))]),
                 span: sp(),
             }],

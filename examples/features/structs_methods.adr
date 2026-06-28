@@ -10,11 +10,11 @@ struct Counter:
 
 impl Point:
     ## Reads two fields and returns a derived value.
-    fn sum(self) returns Float:
+    fn sum(self) -> Float:
         return self.x + self.y
 
     ## Reads self, builds a fresh Point (self unchanged).
-    fn shifted(self, dx: Float, dy: Float) returns Point:
+    fn shifted(self, dx: Float, dy: Float) -> Point:
         return Point(self.x + dx, self.y + dy)
 
 impl Counter:
@@ -22,7 +22,7 @@ impl Counter:
     fn bump(self):
         self.value = self.value + 1
 
-    fn get(self) returns Int:
+    fn get(self) -> Int:
         return self.value
 
 fn main():

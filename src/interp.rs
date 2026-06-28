@@ -61,7 +61,7 @@ use num_traits::{Signed, ToPrimitive, Zero};
 use crate::ast::{
     Arg, BinOp, Block, EnumDecl, Expr, ExprKind, FnDecl, ForStmt, IfStmt, Lambda, LitPattern,
     MatchExpr, Param, Pattern, PatternKind, Payload, Program, Stmt, StmtKind, StrSeg, StructDecl,
-    SubPattern, Target, TargetSeg, UnOp, WhileStmt,
+    Target, TargetSeg, UnOp, WhileStmt,
 };
 use crate::error::Diagnostic;
 use crate::token::Span;
@@ -88,6 +88,23 @@ pub enum Value {
     Str(String),
     /// A list, mutable and shared by reference.
     List(Rc<RefCell<Vec<Value>>>),
+    /// A map (M2), insertion-ordered for stable `Show`. Stored as a `Vec` of
+    /// key/value pairs rather than a hash map because keys are arbitrary
+    /// (structurally-hashed) runtime values and insertion order must be
+    /// preserved; mutable and shared by reference.
+    /// TODO(W1-B): produced and consumed by map literals / comprehensions /
+    /// built-in methods.
+    Map(Rc<RefCell<Vec<(Value, Value)>>>),
+    /// A set (M2), insertion-ordered, deduplicated by structural equality.
+    /// Stored as a `Vec` for the same reasons as [`Value::Map`]; mutable and
+    /// shared by reference.
+    /// TODO(W1-B): produced and consumed by set literals / comprehensions /
+    /// built-in methods.
+    Set(Rc<RefCell<Vec<Value>>>),
+    /// A tuple (M2): a fixed, immutable sequence of values. Shared by reference
+    /// (the contents never mutate, so no `RefCell`).
+    /// TODO(W1-B): produced and consumed by tuple literals / patterns.
+    Tuple(Rc<Vec<Value>>),
     /// The unit value `()`.
     Unit,
     /// The `null` value.
@@ -729,8 +746,36 @@ impl Interp {
             ExprKind::Binary { op, lhs, rhs } => self.eval_binary(*op, lhs, rhs, expr.span, env),
             ExprKind::Call { callee, args } => self.eval_call(callee, args, expr.span, env),
             ExprKind::Index { base, index } => self.eval_index(base, index, expr.span, env),
-            ExprKind::Member { base, name } => self.eval_member(base, name, expr.span, env),
+            ExprKind::Member { base, name, safe } => {
+                if *safe {
+                    // `?.` safe access is M2 Wave 2.
+                    // TODO(W2-B): yield `null` when `base` is null, else the member.
+                    return Err(Diagnostic::runtime(
+                        "safe-call `?.` is not yet implemented (M2 Wave 2)".to_string(),
+                        expr.span,
+                    ));
+                }
+                self.eval_member(base, name, expr.span, env)
+            }
             ExprKind::Match(m) => self.eval_match(m, expr.span, env),
+            // ----- M2 collections / comprehensions (Wave 1) -----
+            // TODO(W1-B): evaluate these into Value::{Map,Set,Tuple}/List.
+            ExprKind::Map(_) => Err(Diagnostic::runtime(
+                "map literals are not yet implemented (M2 Wave 1)".to_string(),
+                expr.span,
+            )),
+            ExprKind::Set(_) => Err(Diagnostic::runtime(
+                "set literals are not yet implemented (M2 Wave 1)".to_string(),
+                expr.span,
+            )),
+            ExprKind::Tuple(_) => Err(Diagnostic::runtime(
+                "tuple literals are not yet implemented (M2 Wave 1)".to_string(),
+                expr.span,
+            )),
+            ExprKind::Comprehension(_) => Err(Diagnostic::runtime(
+                "comprehensions are not yet implemented (M2 Wave 1)".to_string(),
+                expr.span,
+            )),
         }
     }
 
@@ -1045,7 +1090,15 @@ impl Interp {
         span: Span,
         env: &Env,
     ) -> EvalResult {
-        if let ExprKind::Member { base, name } = &callee.kind {
+        if let ExprKind::Member { base, name, safe } = &callee.kind {
+            // `?.method(...)` safe-call is M2 Wave 2.
+            // TODO(W2-B): implement safe method-call dispatch here.
+            if *safe {
+                return Err(Diagnostic::runtime(
+                    "safe-call `?.` is not yet implemented (M2 Wave 2)".to_string(),
+                    span,
+                ));
+            }
             // Qualified enum-variant construction: `Enum.Variant(args)`. Only
             // when the base names a known enum that isn't shadowed by a value.
             if let ExprKind::Name(enum_name) = &base.kind {
@@ -1220,6 +1273,11 @@ impl Interp {
     }
 
     /// Resolve and call a method `recv.name(args)`.
+    ///
+    /// Only user `Struct`/`Enum` receivers resolve to declared `impl` methods.
+    /// All other receiver types (`List`, `Str`, `Map`, `Set`, `Tuple`, and
+    /// range-lists) route to [`Self::call_builtin_method`] — the built-in
+    /// method table that Wave 1-A fills in.
     fn call_method(
         &mut self,
         recv: Value,
@@ -1231,12 +1289,8 @@ impl Interp {
         let type_name_str = match &recv {
             Value::Struct(s) => s.borrow().type_name.clone(),
             Value::Enum(e) => e.enum_name.clone(),
-            other => {
-                return Err(Diagnostic::runtime(
-                    format!("cannot call method `.{}` on {}", name, type_name(other)),
-                    span,
-                ));
-            }
+            // Built-in receiver types: dispatch to the built-in method table.
+            _ => return self.call_builtin_method(recv, name, args, span, env),
         };
 
         let method = self
@@ -1269,6 +1323,33 @@ impl Interp {
                 span,
             )),
         }
+    }
+
+    /// The **built-in method table** for non-user receiver types — `List`,
+    /// `Str`, `Map`, `Set`, `Tuple`, and range-lists (M2 Wave 1-A). This is the
+    /// home for the eager iterator pipeline (`map`/`filter`/`fold`/…) and the
+    /// `Map`/`Set` methods (`get`/`insert`/`keys`/…).
+    ///
+    /// Stage 0 ships this as a stub: every call is a runtime error so the shape
+    /// exists and `call_method` can route to it without colliding with the
+    /// Struct/Enum path. Wave 1-A replaces the body with the real dispatch.
+    // TODO(W1-A): implement the built-in method table here.
+    #[allow(unused_variables)]
+    fn call_builtin_method(
+        &mut self,
+        recv: Value,
+        name: &str,
+        args: &[Arg],
+        span: Span,
+        env: &Env,
+    ) -> EvalResult {
+        Err(Diagnostic::runtime(
+            format!(
+                "built-in method `.{}` is not yet implemented (M2 Wave 1)",
+                name
+            ),
+            span,
+        ))
     }
 
     fn construct_struct(
@@ -1527,30 +1608,30 @@ impl Interp {
                 if subs.len() != inst.payload.len() {
                     return Ok(false);
                 }
+                // Sub-patterns are full patterns (recursive as of M2); the flat
+                // M1 cases (`_`, name, `null`, literal) recurse here unchanged.
                 for (sub, payload_v) in subs.iter().zip(inst.payload.iter()) {
-                    if !self.sub_matches(sub, payload_v, scope)? {
+                    if !self.try_match(sub, payload_v, scope)? {
                         return Ok(false);
                     }
                 }
                 Ok(true)
             }
-        }
-    }
-
-    fn sub_matches(
-        &mut self,
-        sub: &SubPattern,
-        val: &Value,
-        scope: &Env,
-    ) -> Result<bool, Diagnostic> {
-        match sub {
-            SubPattern::Wildcard => Ok(true),
-            SubPattern::Null => Ok(matches!(val, Value::Null)),
-            SubPattern::Literal(lit) => Ok(lit_matches(lit, val)),
-            SubPattern::Binding(name) => {
-                env_define(scope, name, val.clone(), false);
-                Ok(true)
-            }
+            // Or-patterns and tuple patterns are M2 Wave 2; the parser does not
+            // yet produce them, so these arms exist only to keep the match
+            // exhaustive over `PatternKind`.
+            // TODO(W2-A): implement or-pattern matching (first matching arm
+            // wins; alternatives bind the same names).
+            PatternKind::Or(_) => Err(Diagnostic::runtime(
+                "or-patterns are not yet implemented (M2 Wave 2)".to_string(),
+                pat.span,
+            )),
+            // TODO(W2-A): implement tuple-pattern destructuring against
+            // `Value::Tuple`.
+            PatternKind::Tuple(_) => Err(Diagnostic::runtime(
+                "tuple patterns are not yet implemented (M2 Wave 2)".to_string(),
+                pat.span,
+            )),
         }
     }
 }
@@ -1587,6 +1668,9 @@ fn type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "Bool",
         Value::Str(_) => "String",
         Value::List(_) => "List",
+        Value::Map(_) => "Map",
+        Value::Set(_) => "Set",
+        Value::Tuple(_) => "tuple",
         Value::Unit => "()",
         Value::Null => "null",
         Value::Struct(_) => "struct",
@@ -1641,6 +1725,28 @@ fn values_equal(a: &Value, b: &Value) -> bool {
             xs.len() == ys.len()
                 && xs.iter().zip(ys.iter()).all(|(p, q)| values_equal(p, q))
         }
+        // Tuples: element-wise structural equality (correct and final).
+        (Value::Tuple(x), Value::Tuple(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| values_equal(p, q))
+        }
+        // TODO(W1-A): Map/Set equality should be order-insensitive (set/dict
+        // semantics). These Values are never produced by M1 programs, so this
+        // placeholder is currently unreachable; W1-A replaces it with the real
+        // structural comparison once map/set literals exist.
+        (Value::Map(x), Value::Map(y)) => {
+            let xs = x.borrow();
+            let ys = y.borrow();
+            xs.len() == ys.len()
+                && xs.iter().zip(ys.iter()).all(|((kx, vx), (ky, vy))| {
+                    values_equal(kx, ky) && values_equal(vx, vy)
+                })
+        }
+        (Value::Set(x), Value::Set(y)) => {
+            let xs = x.borrow();
+            let ys = y.borrow();
+            xs.len() == ys.len()
+                && xs.iter().zip(ys.iter()).all(|(p, q)| values_equal(p, q))
+        }
         (Value::Struct(x), Value::Struct(y)) => {
             let xi = x.borrow();
             let yi = y.borrow();
@@ -1679,6 +1785,27 @@ fn show(v: &Value) -> String {
         Value::List(items) => {
             let inner: Vec<String> = items.borrow().iter().map(show).collect();
             format!("[{}]", inner.join(", "))
+        }
+        // Tuples render as `(a, b, …)` (final).
+        Value::Tuple(items) => {
+            let inner: Vec<String> = items.iter().map(show).collect();
+            format!("({})", inner.join(", "))
+        }
+        // TODO(W1-A): confirm the exact Map/Set rendering when literals land.
+        // These Values are never produced by M1 programs, so this is currently
+        // unreachable; the rendering here is a sensible default for W1-A to
+        // adopt or refine.
+        Value::Map(pairs) => {
+            let inner: Vec<String> = pairs
+                .borrow()
+                .iter()
+                .map(|(k, v)| format!("{}: {}", show(k), show(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+        Value::Set(items) => {
+            let inner: Vec<String> = items.borrow().iter().map(show).collect();
+            format!("{{{}}}", inner.join(", "))
         }
         Value::Struct(s) => {
             let inst = s.borrow();
@@ -2082,6 +2209,7 @@ mod tests {
                         },
                         span: sp(),
                     },
+                    guard: None,
                     body: block(vec![expr_stmt(int(0))]),
                     span: sp(),
                 },
@@ -2090,10 +2218,14 @@ mod tests {
                         kind: PatternKind::Variant {
                             enum_name: None,
                             name: "B".to_string(),
-                            subs: vec![SubPattern::Binding("n".to_string())],
+                            subs: vec![Pattern {
+                                kind: PatternKind::Binding("n".to_string()),
+                                span: sp(),
+                            }],
                         },
                         span: sp(),
                     },
+                    guard: None,
                     body: block(vec![expr_stmt(name("n"))]),
                     span: sp(),
                 },
@@ -2122,11 +2254,13 @@ mod tests {
                         kind: PatternKind::Literal(LitPattern::Int(BigInt::from(1))),
                         span: sp(),
                     },
+                    guard: None,
                     body: block(vec![expr_stmt(int(100))]),
                     span: sp(),
                 },
                 MatchArm {
                     pattern: Pattern { kind: PatternKind::Wildcard, span: sp() },
+                    guard: None,
                     body: block(vec![expr_stmt(int(999))]),
                     span: sp(),
                 },
@@ -2251,6 +2385,7 @@ mod tests {
                     nullable: false,
                     span: sp(),
                 },
+                default: None,
             }],
             returns: None,
             body: block(vec![expr_stmt(bin(BinOp::Add, name("n"), name("n")))]),
@@ -2277,6 +2412,7 @@ mod tests {
             callee: Box::new(ex(ExprKind::Member {
                 base: Box::new(ex(ExprKind::Null)),
                 name: "or_else".to_string(),
+                safe: false,
             })),
             args: vec![Arg::Positional(int(5))],
         });
@@ -2288,6 +2424,7 @@ mod tests {
             callee: Box::new(ex(ExprKind::Member {
                 base: Box::new(int(3)),
                 name: "or_else".to_string(),
+                safe: false,
             })),
             args: vec![Arg::Positional(int(5))],
         });
@@ -2322,7 +2459,10 @@ mod tests {
                     name: name.to_string(),
                     subs: subs
                         .into_iter()
-                        .map(|s| SubPattern::Binding(s.to_string()))
+                        .map(|s| Pattern {
+                            kind: PatternKind::Binding(s.to_string()),
+                            span: sp(),
+                        })
                         .collect(),
                 },
                 span: sp(),
@@ -2382,11 +2522,13 @@ mod tests {
             arms: vec![
                 MatchArm {
                     pattern: variant_pat("Num", vec!["n"]),
+                    guard: None,
                     body: block(vec![expr_stmt(name("n"))]),
                     span: sp(),
                 },
                 MatchArm {
                     pattern: variant_pat("Add", vec!["a", "b"]),
+                    guard: None,
                     body: block(vec![expr_stmt(bin(
                         BinOp::Add,
                         call(name("eval"), vec![name("a")]),
@@ -2396,6 +2538,7 @@ mod tests {
                 },
                 MatchArm {
                     pattern: variant_pat("Mul", vec!["a", "b"]),
+                    guard: None,
                     body: block(vec![expr_stmt(bin(
                         BinOp::Mul,
                         call(name("eval"), vec![name("a")]),
@@ -2405,6 +2548,7 @@ mod tests {
                 },
                 MatchArm {
                     pattern: variant_pat("Div", vec!["a", "b"]),
+                    guard: None,
                     body: block(vec![
                         st(StmtKind::Binding(Binding {
                             name: "divisor".to_string(),
@@ -2446,6 +2590,7 @@ mod tests {
                     nullable: false,
                     span: sp(),
                 },
+                default: None,
             }],
             returns: Some(ty_float()),
             body: block(vec![st(StmtKind::Return(Some(match_expr)))]),
@@ -2469,7 +2614,7 @@ mod tests {
         // program = Expr.Mul(Expr.Add(Expr.Num(1.0), Expr.Num(2.0)), Expr.Num(3.0))
         let vc = |v: &str, args: Vec<Expr>| {
             call(
-                ex(ExprKind::Member { base: Box::new(name("Expr")), name: v.to_string() }),
+                ex(ExprKind::Member { base: Box::new(name("Expr")), name: v.to_string(), safe: false }),
                 args,
             )
         };
@@ -2513,7 +2658,10 @@ mod tests {
                     name: name.to_string(),
                     subs: subs
                         .into_iter()
-                        .map(|s| SubPattern::Binding(s.to_string()))
+                        .map(|s| Pattern {
+                            kind: PatternKind::Binding(s.to_string()),
+                            span: sp(),
+                        })
                         .collect(),
                 },
                 span: sp(),
@@ -2545,11 +2693,13 @@ mod tests {
             arms: vec![
                 MatchArm {
                     pattern: variant_pat("Num", vec!["n"]),
+                    guard: None,
                     body: block(vec![expr_stmt(name("n"))]),
                     span: sp(),
                 },
                 MatchArm {
                     pattern: variant_pat("Div", vec!["a", "b"]),
+                    guard: None,
                     body: block(vec![
                         st(StmtKind::Binding(Binding {
                             name: "divisor".to_string(),
@@ -2589,6 +2739,7 @@ mod tests {
                     nullable: false,
                     span: sp(),
                 },
+                default: None,
             }],
             returns: Some(ty_float()),
             body: block(vec![st(StmtKind::Return(Some(match_expr)))]),
@@ -2609,7 +2760,7 @@ mod tests {
 
         let vc = |v: &str, args: Vec<Expr>| {
             call(
-                ex(ExprKind::Member { base: Box::new(name("E")), name: v.to_string() }),
+                ex(ExprKind::Member { base: Box::new(name("E")), name: v.to_string(), safe: false }),
                 args,
             )
         };
