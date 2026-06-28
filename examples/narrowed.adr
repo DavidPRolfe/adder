@@ -1,6 +1,6 @@
 ## The same null code, guarded by `is not null` — compiles and runs.
 
-fn add_one(x: Int?) returns Int:
+fn add_one(x: Int?) -> Int:
     if x is not null:
         return x + 1
     return 0

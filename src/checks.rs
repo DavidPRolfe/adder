@@ -27,8 +27,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    Arg, BinOp, Binding, EnumDecl, Expr, ExprKind, FnDecl, IfStmt, ImplDecl, Param,
-    PatternKind, Payload, Program, Stmt, StmtKind, Type, BaseType, MatchExpr,
+    Arg, BaseType, BinOp, Binder, Binding, EnumDecl, Expr, ExprKind, FnDecl, IfStmt, ImplDecl,
+    MatchExpr, Param, Pattern, PatternKind, Payload, Program, Stmt, StmtKind, Type,
 };
 use crate::error::Diagnostic;
 use crate::token::Span;
@@ -199,8 +199,19 @@ impl<'a> Exhaustiveness<'a> {
             StmtKind::Binding(b) => {
                 // Visit the initializer first (it may contain matches).
                 self.check_expr(&b.value, scope);
-                let ty = self.resolve_binding_ty(b, scope);
-                scope.insert(b.name.clone(), ty);
+                match &b.binder {
+                    // A single-name binding may resolve to an enum type.
+                    Binder::Name(name) => {
+                        let ty = self.resolve_binding_ty(b, scope);
+                        scope.insert(name.clone(), ty);
+                    }
+                    // A tuple destructure binds several names of unknown type.
+                    Binder::Tuple(names) => {
+                        for n in names {
+                            scope.insert(n.clone(), ResolvedTy::Unknown);
+                        }
+                    }
+                }
             }
             StmtKind::Assign(a) => {
                 self.check_expr(&a.value, scope);
@@ -234,8 +245,10 @@ impl<'a> Exhaustiveness<'a> {
             StmtKind::For(fr) => {
                 self.check_expr(&fr.iter, scope);
                 let mut inner = scope.clone();
-                // The loop var's type is unknown to this lightweight pass.
-                inner.insert(fr.var.clone(), ResolvedTy::Unknown);
+                // The loop binder's name(s) are of unknown type to this pass.
+                for n in binder_names(&fr.binder) {
+                    inner.insert(n.clone(), ResolvedTy::Unknown);
+                }
                 self.check_stmts(&fr.body.stmts, &mut inner);
             }
 
@@ -254,7 +267,7 @@ impl<'a> Exhaustiveness<'a> {
     fn check_fn(&mut self, decl: &FnDecl) {
         let mut scope: HashMap<String, ResolvedTy> = HashMap::new();
         for p in &decl.params {
-            if let Param::Named { name, ty } = p {
+            if let Param::Named { name, ty, .. } = p {
                 let rt = match self.enums.enum_name_of_type(ty) {
                     // A *nullable* enum param isn't a plain enum value, so don't
                     // treat it as exhaustively-matchable directly.
@@ -354,6 +367,24 @@ impl<'a> Exhaustiveness<'a> {
                     }
                 }
             }
+            // M2 collections / comprehensions: recurse so nested `match`es are
+            // still checked. These never resolve to an enum type themselves.
+            ExprKind::Map(pairs) => {
+                for (k, v) in pairs {
+                    self.check_expr(k, scope);
+                    self.check_expr(v, scope);
+                }
+            }
+            ExprKind::Set(items) | ExprKind::Tuple(items) => {
+                for it in items {
+                    self.check_expr(it, scope);
+                }
+            }
+            ExprKind::Comprehension(c) => {
+                self.check_comprehension_exprs(c, scope, &mut |this, e, sc| {
+                    this.check_expr(e, sc)
+                });
+            }
             // Leaves.
             ExprKind::Int(_)
             | ExprKind::Float(_)
@@ -361,6 +392,30 @@ impl<'a> Exhaustiveness<'a> {
             | ExprKind::Null
             | ExprKind::Name(_)
             | ExprKind::SelfExpr => {}
+        }
+    }
+
+    /// Recurse into a comprehension's sub-expressions (output, iterable, filter)
+    /// with `visit`. The binder is scoped to the comprehension but is of unknown
+    /// type to this lightweight pass, so we do not add it to `scope`.
+    /// TODO(W1-B): once comprehensions evaluate, revisit scoping if needed.
+    fn check_comprehension_exprs(
+        &mut self,
+        c: &crate::ast::Comprehension,
+        scope: &HashMap<String, ResolvedTy>,
+        visit: &mut dyn FnMut(&mut Self, &Expr, &HashMap<String, ResolvedTy>),
+    ) {
+        use crate::ast::ComprehensionOutput::*;
+        match &c.output {
+            List(e) | Set(e) => visit(self, e, scope),
+            Map { key, value } => {
+                visit(self, key, scope);
+                visit(self, value, scope);
+            }
+        }
+        visit(self, &c.iter, scope);
+        if let Some(cond) = &c.cond {
+            visit(self, cond, scope);
         }
     }
 
@@ -376,8 +431,11 @@ impl<'a> Exhaustiveness<'a> {
             ResolvedTy::Enum(e) => e,
             ResolvedTy::Unknown => return, // conservative: don't flag.
         };
-        let variants = match self.enums.enums.get(&enum_name) {
-            Some(v) => v,
+        // Clone the variant table so `self` is free for `&mut self` diagnostics
+        // while we walk the arms (the borrow checker treats a method's `self` as
+        // a whole, so we cannot hold a `&self.enums` borrow across `self.diags`).
+        let variants: Vec<(String, usize)> = match self.enums.enums.get(&enum_name) {
+            Some(v) => v.clone(),
             None => return,
         };
 
@@ -385,45 +443,20 @@ impl<'a> Exhaustiveness<'a> {
         let mut has_catch_all = false;
 
         for arm in &m.arms {
-            match &arm.pattern.kind {
-                PatternKind::Wildcard => has_catch_all = true,
-                PatternKind::Binding(_) => has_catch_all = true, // bare NAME matches anything
-                PatternKind::Variant { enum_name: qual, name, subs } => {
-                    // A qualified pattern must name the scrutinee's enum.
-                    if let Some(en) = qual {
-                        if en != &enum_name {
-                            self.diags.push(Diagnostic::check(
-                                format!(
-                                    "pattern matches enum `{}`, but the value is `{}`",
-                                    en, enum_name
-                                ),
-                                arm.pattern.span,
-                            ));
-                            continue;
-                        }
-                    }
-                    // Arity / unknown-variant diagnostics (cheap, best-effort).
-                    if let Some((_, arity)) = variants.iter().find(|(vn, _)| vn == name) {
-                        if *arity != subs.len() {
-                            self.diags.push(Diagnostic::check(
-                                format!(
-                                    "variant `{}::{}` expects {} field(s), but the pattern binds {}",
-                                    enum_name, name, arity, subs.len()
-                                ),
-                                arm.pattern.span,
-                            ));
-                        }
-                        covered.insert(name.as_str());
-                    } else {
-                        self.diags.push(Diagnostic::check(
-                            format!("unknown variant `{}` for enum `{}`", name, enum_name),
-                            arm.pattern.span,
-                        ));
-                    }
-                }
-                // null and literal patterns never cover an enum variant.
-                PatternKind::Null | PatternKind::Literal(_) => {}
+            // A *guarded* arm (`pattern if cond:`) may not fire, so it does not
+            // contribute to exhaustiveness — skip its coverage entirely (M2). So
+            // a guard over the last uncovered variant still leaves the match
+            // non-exhaustive; adding `_` (or an unguarded arm) fixes it.
+            if arm.guard.is_some() {
+                continue;
             }
+            self.cover_pattern(
+                &arm.pattern,
+                &enum_name,
+                &variants,
+                &mut covered,
+                &mut has_catch_all,
+            );
         }
 
         if has_catch_all {
@@ -449,6 +482,75 @@ impl<'a> Exhaustiveness<'a> {
                 ),
                 match_span,
             ));
+        }
+    }
+
+    /// Record the enum-variant coverage of one (sub-)pattern against `variants`,
+    /// emitting any best-effort arity / unknown-variant / wrong-enum diagnostics.
+    ///
+    /// Coverage stays **enum-variant-based** (as in M1): a variant pattern covers
+    /// its variant regardless of how its sub-patterns are shaped — no deep or
+    /// cross-product reasoning. `_` and a bare binding cover everything
+    /// (`has_catch_all`). An **or-pattern** contributes the coverage of *all* its
+    /// alternatives (so `.A or .B` covers both). Tuple / null / literal patterns
+    /// never cover an enum variant. The `'a` lifetime ties inserted names to the
+    /// pattern tree (`m`), so `covered` can borrow them.
+    fn cover_pattern<'p>(
+        &mut self,
+        pat: &'p Pattern,
+        enum_name: &str,
+        variants: &[(String, usize)],
+        covered: &mut HashSet<&'p str>,
+        has_catch_all: &mut bool,
+    ) {
+        match &pat.kind {
+            PatternKind::Wildcard => *has_catch_all = true,
+            PatternKind::Binding(_) => *has_catch_all = true, // bare NAME matches anything
+            PatternKind::Variant { enum_name: qual, name, subs } => {
+                // A qualified pattern must name the scrutinee's enum.
+                if let Some(en) = qual {
+                    if en != enum_name {
+                        self.diags.push(Diagnostic::check(
+                            format!(
+                                "pattern matches enum `{}`, but the value is `{}`",
+                                en, enum_name
+                            ),
+                            pat.span,
+                        ));
+                        return;
+                    }
+                }
+                // Arity / unknown-variant diagnostics (cheap, best-effort). The
+                // sub-patterns may themselves be nested patterns (M2); they do
+                // not affect exhaustiveness, so we do not recurse into them here.
+                if let Some((_, arity)) = variants.iter().find(|(vn, _)| vn == name) {
+                    if *arity != subs.len() {
+                        self.diags.push(Diagnostic::check(
+                            format!(
+                                "variant `{}::{}` expects {} field(s), but the pattern binds {}",
+                                enum_name, name, arity, subs.len()
+                            ),
+                            pat.span,
+                        ));
+                    }
+                    covered.insert(name.as_str());
+                } else {
+                    self.diags.push(Diagnostic::check(
+                        format!("unknown variant `{}` for enum `{}`", name, enum_name),
+                        pat.span,
+                    ));
+                }
+            }
+            // An or-pattern covers the union of its alternatives' coverage, so
+            // each alternative is walked recursively (`.A or .B` covers both; an
+            // alternative that is a wildcard makes the whole arm a catch-all).
+            PatternKind::Or(alts) => {
+                for alt in alts {
+                    self.cover_pattern(alt, enum_name, variants, covered, has_catch_all);
+                }
+            }
+            // null / literal / tuple patterns never cover an enum variant.
+            PatternKind::Null | PatternKind::Literal(_) | PatternKind::Tuple(_) => {}
         }
     }
 }
@@ -493,8 +595,19 @@ impl<'a> NullNarrowing<'a> {
                 // the RHS doesn't "require T", so don't flag plain references.
                 // But nested uses inside it (e.g. `x.f`) should be checked.
                 self.check_expr_uses(&b.value, scope);
-                let state = self.binding_null_state(b, scope);
-                scope.insert(b.name.clone(), state);
+                match &b.binder {
+                    Binder::Name(name) => {
+                        let state = self.binding_null_state(b, scope);
+                        scope.insert(name.clone(), state);
+                    }
+                    // Destructured names have no tracked nullability (a tuple
+                    // binder carries no annotation); treat each as unknown.
+                    Binder::Tuple(names) => {
+                        for n in names {
+                            scope.insert(n.clone(), NullState::Unknown);
+                        }
+                    }
+                }
             }
             StmtKind::Assign(a) => {
                 self.check_expr_uses(&a.value, scope);
@@ -527,7 +640,9 @@ impl<'a> NullNarrowing<'a> {
             StmtKind::For(fr) => {
                 self.check_expr_uses(&fr.iter, scope);
                 let mut inner = scope.clone();
-                inner.insert(fr.var.clone(), NullState::Unknown);
+                for n in binder_names(&fr.binder) {
+                    inner.insert(n.clone(), NullState::Unknown);
+                }
                 self.check_stmts(&fr.body.stmts, &mut inner);
             }
 
@@ -545,7 +660,7 @@ impl<'a> NullNarrowing<'a> {
     fn check_fn(&mut self, decl: &FnDecl) {
         let mut scope: HashMap<String, NullState> = HashMap::new();
         for p in &decl.params {
-            if let Param::Named { name, ty } = p {
+            if let Param::Named { name, ty, .. } = p {
                 let st = if ty.nullable { NullState::Nullable } else { NullState::NonNull };
                 scope.insert(name.clone(), st);
             }
@@ -590,8 +705,9 @@ impl<'a> NullNarrowing<'a> {
         match &e.kind {
             ExprKind::Null => NullState::Nullable,
             ExprKind::Name(n) => scope.get(n).copied().unwrap_or(NullState::Unknown),
-            // `x.or_else(default)` always yields a non-null value.
-            ExprKind::Call { callee, .. } if is_or_else_call(callee) => NullState::NonNull,
+            // `x.or_else(default)` and `x.expect(msg)` both yield a non-null
+            // value (the latter `panic`s rather than producing `null`).
+            ExprKind::Call { callee, .. } if is_null_handling_call(callee) => NullState::NonNull,
             // Most other literals/constructions are non-null, but we only need
             // to be sure for flagging; treat unknown to stay conservative about
             // *propagation* (we never flag based on Unknown).
@@ -609,13 +725,14 @@ impl<'a> NullNarrowing<'a> {
     /// calls are covered.
     fn check_expr_uses(&mut self, e: &Expr, scope: &HashMap<String, NullState>) {
         match &e.kind {
-            // Member access / method call: `x.f`. The `or_else` member itself is
-            // a *valid* use of a nullable receiver, so special-case it.
-            ExprKind::Member { base, name } => {
-                if name == "or_else" {
-                    // `x.or_else` — accessing or_else on a nullable x is allowed.
-                    // Still recurse into base's own sub-structure, but do NOT
-                    // treat a bare nullable name here as a required-T use.
+            // Member access / method call: `x.f`. Three forms *handle* a
+            // nullable receiver and so do NOT require narrowing: `?.` safe access
+            // (`safe: true`), `.or_else`, and `.expect` — see [`handles_null`].
+            ExprKind::Member { base, name, safe } => {
+                if *safe || handles_null(name) {
+                    // The receiver may be nullable here. Still recurse into a
+                    // non-name base, but do NOT treat a bare nullable name as a
+                    // required-T use.
                     if !matches!(base.kind, ExprKind::Name(_)) {
                         self.check_expr_uses(base, scope);
                     }
@@ -625,9 +742,11 @@ impl<'a> NullNarrowing<'a> {
                 }
             }
             ExprKind::Call { callee, args } => {
-                // Detect `x.or_else(d)` — the receiver `x` may be nullable here.
-                if let ExprKind::Member { base, name } = &callee.kind {
-                    if name == "or_else" {
+                // A method call whose callee *handles* null — `x.or_else(d)`,
+                // `x.expect(m)`, or any `x?.m(…)` safe-call — may take a nullable
+                // receiver `x` without narrowing.
+                if let ExprKind::Member { base, name, safe } = &callee.kind {
+                    if *safe || handles_null(name) {
                         // Receiver use is fine even if nullable; recurse into a
                         // non-name base only.
                         if !matches!(base.kind, ExprKind::Name(_)) {
@@ -705,6 +824,32 @@ impl<'a> NullNarrowing<'a> {
                     }
                 }
             }
+            // M2 collections / comprehensions: recurse into sub-expressions.
+            ExprKind::Map(pairs) => {
+                for (k, v) in pairs {
+                    self.check_expr_uses(k, scope);
+                    self.check_expr_uses(v, scope);
+                }
+            }
+            ExprKind::Set(items) | ExprKind::Tuple(items) => {
+                for it in items {
+                    self.check_expr_uses(it, scope);
+                }
+            }
+            ExprKind::Comprehension(c) => {
+                use crate::ast::ComprehensionOutput::*;
+                match &c.output {
+                    List(e) | Set(e) => self.check_expr_uses(e, scope),
+                    Map { key, value } => {
+                        self.check_expr_uses(key, scope);
+                        self.check_expr_uses(value, scope);
+                    }
+                }
+                self.check_expr_uses(&c.iter, scope);
+                if let Some(cond) = &c.cond {
+                    self.check_expr_uses(cond, scope);
+                }
+            }
             // Leaves — a bare name reference on its own does not "require T".
             ExprKind::Int(_)
             | ExprKind::Float(_)
@@ -732,6 +877,15 @@ impl<'a> NullNarrowing<'a> {
     }
 }
 
+/// The name(s) a [`Binder`] introduces — one for a single name, several for a
+/// tuple destructure. Used to seed loop-binder scoping in both static passes.
+fn binder_names(binder: &Binder) -> Vec<&String> {
+    match binder {
+        Binder::Name(n) => vec![n],
+        Binder::Tuple(names) => names.iter().collect(),
+    }
+}
+
 /// Recognize the narrowing guard `x is not null` (scrutinee exactly a name).
 /// Returns the narrowed name. Handles both `x is not null` and the mirror
 /// `null is not x` shape.
@@ -746,9 +900,18 @@ fn is_not_null_guard(cond: &Expr) -> Option<&str> {
     None
 }
 
-/// True if `callee` is a member access `<something>.or_else`.
-fn is_or_else_call(callee: &Expr) -> bool {
-    matches!(&callee.kind, ExprKind::Member { name, .. } if name == "or_else")
+/// The two methods that consume a nullable receiver and produce a non-null
+/// result: `.or_else(default)` (substitutes the default) and `.expect(msg)`
+/// (asserts non-null, `panic`king otherwise). Both are valid ways to handle a
+/// `T?` and both yield a non-null `T`.
+fn handles_null(name: &str) -> bool {
+    name == "or_else" || name == "expect"
+}
+
+/// True if `callee` is a member access for a null-handling method
+/// (`<something>.or_else` / `<something>.expect`) — see [`handles_null`].
+fn is_null_handling_call(callee: &Expr) -> bool {
+    matches!(&callee.kind, ExprKind::Member { name, .. } if handles_null(name))
 }
 
 // ===========================================================================
@@ -792,7 +955,7 @@ mod tests {
     }
 
     fn member(base: Expr, n: &str) -> Expr {
-        expr(ExprKind::Member { base: Box::new(base), name: n.to_string() })
+        expr(ExprKind::Member { base: Box::new(base), name: n.to_string(), safe: false })
     }
 
     fn stmt(kind: StmtKind) -> Stmt {
@@ -826,10 +989,17 @@ mod tests {
                 kind: PatternKind::Variant {
                     enum_name: None,
                     name: name.to_string(),
-                    subs: binds.iter().map(|b| SubPattern::Binding(b.to_string())).collect(),
+                    subs: binds
+                        .iter()
+                        .map(|b| Pattern {
+                            kind: PatternKind::Binding(b.to_string()),
+                            span: sp(),
+                        })
+                        .collect(),
                 },
                 span: sp(),
             },
+            guard: None,
             body: block(vec![stmt(StmtKind::Expr(body))]),
             span: sp(),
         }
@@ -838,6 +1008,7 @@ mod tests {
     fn wildcard_arm(body: Expr) -> MatchArm {
         MatchArm {
             pattern: Pattern { kind: PatternKind::Wildcard, span: sp() },
+            guard: None,
             body: block(vec![stmt(StmtKind::Expr(body))]),
             span: sp(),
         }
@@ -857,7 +1028,7 @@ mod tests {
     ) -> Stmt {
         stmt(StmtKind::Fn(FnDecl {
             name: fname.to_string(),
-            params: vec![Param::Named { name: pname.to_string(), ty: pty }],
+            params: vec![Param::Named { name: pname.to_string(), ty: pty, default: None }],
             returns,
             body: block(body),
             doc: None,
@@ -961,6 +1132,7 @@ mod tests {
         let expr_enum = enum_decl("Color", &[("Red", 0), ("Green", 0), ("Blue", 0)]);
         let other_arm = MatchArm {
             pattern: Pattern { kind: PatternKind::Binding("other".to_string()), span: sp() },
+            guard: None,
             body: block(vec![stmt(StmtKind::Expr(name("other")))]),
             span: sp(),
         };
@@ -991,6 +1163,7 @@ mod tests {
                     kind: PatternKind::Literal(LitPattern::Int(BigInt::from(0))),
                     span: sp(),
                 },
+                guard: None,
                 body: block(vec![stmt(StmtKind::Expr(name("x")))]),
                 span: sp(),
             }],
@@ -1048,6 +1221,183 @@ mod tests {
         let p = program(vec![expr_enum, f]);
         let errs = check_errs(&p);
         assert!(errs.iter().any(|e| e.contains("field")), "expected arity error: {:?}", errs);
+    }
+
+    // ----------------------- W2-A: guards / or-patterns --------------------
+
+    /// A niladic variant pattern (no binds) as an arm.
+    fn niladic_arm(name: &str, body: Expr) -> MatchArm {
+        variant_arm(name, &[], body)
+    }
+
+    /// An or-pattern arm over niladic variants: `.A or .B or … :`.
+    fn or_variant_arm(names: &[&str], body: Expr) -> MatchArm {
+        let alts = names
+            .iter()
+            .map(|n| Pattern {
+                kind: PatternKind::Variant {
+                    enum_name: None,
+                    name: n.to_string(),
+                    subs: vec![],
+                },
+                span: sp(),
+            })
+            .collect();
+        MatchArm {
+            pattern: Pattern { kind: PatternKind::Or(alts), span: sp() },
+            guard: None,
+            body: block(vec![stmt(StmtKind::Expr(body))]),
+            span: sp(),
+        }
+    }
+
+    /// A guard expression that is just `true` (shape only — never type-checked).
+    fn true_guard() -> Expr {
+        expr(ExprKind::Bool(true))
+    }
+
+    /// Build the canonical 3-color enum used by the guard/or tests.
+    fn color_enum() -> Stmt {
+        enum_decl("Color", &[("Red", 0), ("Green", 0), ("Blue", 0)])
+    }
+
+    fn match_over_color(arms: Vec<MatchArm>) -> Program {
+        let m = match_expr(name("c"), arms);
+        let f = fn_one_param(
+            "f",
+            "c",
+            ty_named("Color", false),
+            None,
+            vec![stmt(StmtKind::Expr(m))],
+        );
+        program(vec![color_enum(), f])
+    }
+
+    /// A guarded arm does NOT contribute coverage: if the only arm for the last
+    /// uncovered variant is guarded (and there is no `_`), the match is
+    /// non-exhaustive. **(DoD)**
+    #[test]
+    fn guarded_arm_does_not_cover() {
+        let arms = vec![
+            niladic_arm("Red", name("c")),
+            niladic_arm("Green", name("c")),
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Variant {
+                        enum_name: None,
+                        name: "Blue".to_string(),
+                        subs: vec![],
+                    },
+                    span: sp(),
+                },
+                guard: Some(true_guard()),
+                body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+                span: sp(),
+            },
+        ];
+        let p = match_over_color(arms);
+        let errs = check_errs(&p);
+        assert_eq!(errs.len(), 1, "expected one error, got {:?}", errs);
+        assert!(errs[0].contains("Blue"), "error should name Blue: {}", errs[0]);
+    }
+
+    /// Adding a `_` after the guarded arm restores exhaustiveness.
+    #[test]
+    fn guarded_arm_with_wildcard_ok() {
+        let arms = vec![
+            niladic_arm("Red", name("c")),
+            niladic_arm("Green", name("c")),
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Variant {
+                        enum_name: None,
+                        name: "Blue".to_string(),
+                        subs: vec![],
+                    },
+                    span: sp(),
+                },
+                guard: Some(true_guard()),
+                body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+                span: sp(),
+            },
+            wildcard_arm(name("c")),
+        ];
+        let p = match_over_color(arms);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// An unguarded arm for the last variant (alongside a guarded duplicate of
+    /// another) restores exhaustiveness.
+    #[test]
+    fn unguarded_arm_after_guarded_ok() {
+        let arms = vec![
+            niladic_arm("Red", name("c")),
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Variant {
+                        enum_name: None,
+                        name: "Green".to_string(),
+                        subs: vec![],
+                    },
+                    span: sp(),
+                },
+                guard: Some(true_guard()),
+                body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+                span: sp(),
+            },
+            niladic_arm("Green", name("c")),
+            niladic_arm("Blue", name("c")),
+        ];
+        let p = match_over_color(arms);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// An or-pattern covers ALL its alternatives: `.Red or .Green` + `.Blue`
+    /// exhausts Color.
+    #[test]
+    fn or_pattern_covers_all_alternatives() {
+        let arms = vec![
+            or_variant_arm(&["Red", "Green"], name("c")),
+            niladic_arm("Blue", name("c")),
+        ];
+        let p = match_over_color(arms);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// An or-pattern that omits a variant is still non-exhaustive.
+    #[test]
+    fn or_pattern_missing_variant_errors() {
+        let arms = vec![or_variant_arm(&["Red", "Green"], name("c"))];
+        let p = match_over_color(arms);
+        let errs = check_errs(&p);
+        assert_eq!(errs.len(), 1, "expected one error, got {:?}", errs);
+        assert!(errs[0].contains("Blue"), "error should name Blue: {}", errs[0]);
+    }
+
+    /// An or-pattern with a wildcard alternative makes the arm a catch-all.
+    #[test]
+    fn or_pattern_with_wildcard_alternative_ok() {
+        let arms = vec![MatchArm {
+            pattern: Pattern {
+                kind: PatternKind::Or(vec![
+                    Pattern {
+                        kind: PatternKind::Variant {
+                            enum_name: None,
+                            name: "Red".to_string(),
+                            subs: vec![],
+                        },
+                        span: sp(),
+                    },
+                    Pattern { kind: PatternKind::Wildcard, span: sp() },
+                ]),
+                span: sp(),
+            },
+            guard: None,
+            body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+            span: sp(),
+        }];
+        let p = match_over_color(arms);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
     }
 
     // ----------------------- Null-narrowing tests --------------------------
@@ -1140,5 +1490,64 @@ mod tests {
         let f = fn_one_param("f", "x", ty_named("Int", true), None, body);
         let p = program(vec![f]);
         assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    // -------- M2 Wave 2-B: `?.` safe-call and `.expect` --------------------
+
+    /// A safe member access on a `T?`, `x?.field`, handles null itself → Ok.
+    #[test]
+    fn null_safe_member_ok() {
+        let safe = expr(ExprKind::Member {
+            base: Box::new(name("x")),
+            name: "field".to_string(),
+            safe: true,
+        });
+        let body = vec![stmt(StmtKind::Expr(safe))];
+        let f = fn_one_param("f", "x", ty_named("Thing", true), None, body);
+        let p = program(vec![f]);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// A safe method call on a `T?`, `x?.m()`, handles null itself → Ok.
+    #[test]
+    fn null_safe_method_call_ok() {
+        let safe_member = expr(ExprKind::Member {
+            base: Box::new(name("x")),
+            name: "m".to_string(),
+            safe: true,
+        });
+        let body = vec![stmt(StmtKind::Expr(call(safe_member, vec![])))];
+        let f = fn_one_param("f", "x", ty_named("Thing", true), None, body);
+        let p = program(vec![f]);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// `x.expect(msg)` on a `T?` yields non-null and is a valid use → Ok, and
+    /// chaining `.field` off the result is fine too.
+    #[test]
+    fn null_expect_ok() {
+        let expect = call(
+            member(name("x"), "expect"),
+            vec![expr(ExprKind::Str(StringLit {
+                parts: vec![StrSeg::Text("required".to_string())],
+            }))],
+        );
+        let use_expr = member(expect, "field");
+        let body = vec![stmt(StmtKind::Expr(use_expr))];
+        let f = fn_one_param("f", "x", ty_named("Thing", true), None, body);
+        let p = program(vec![f]);
+        assert_eq!(check_errs(&p), Vec::<String>::new());
+    }
+
+    /// Sanity: a PLAIN member access on the same un-narrowed `T?` still errors,
+    /// so the sugar above did not weaken the M1 check.
+    #[test]
+    fn null_plain_member_still_errors() {
+        let body = vec![stmt(StmtKind::Expr(member(name("x"), "field")))];
+        let f = fn_one_param("f", "x", ty_named("Thing", true), None, body);
+        let p = program(vec![f]);
+        let errs = check_errs(&p);
+        assert_eq!(errs.len(), 1, "plain `.field` must still error, got {:?}", errs);
+        assert!(errs[0].contains("`x`"), "{}", errs[0]);
     }
 }

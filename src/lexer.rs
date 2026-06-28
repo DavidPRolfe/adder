@@ -812,7 +812,13 @@ impl<'a> Lexer<'a> {
             },
             ':' => emit!(1, TokenKind::Colon),
             ',' => emit!(1, TokenKind::Comma),
-            '?' => emit!(1, TokenKind::Question),
+            // `?.` is the safe-call operator (M2); a lone `?` is the nullable
+            // type suffix. Maximal munch: only fold `.` in when it immediately
+            // follows the `?`.
+            '?' => match c1 {
+                Some('.') => emit!(2, TokenKind::QuestionDot),
+                _ => emit!(1, TokenKind::Question),
+            },
             '(' => {
                 self.bracket_depth += 1;
                 emit!(1, TokenKind::LParen)
@@ -881,7 +887,8 @@ fn is_id_continue(c: char) -> bool {
 ///
 /// Reserved-but-unused-in-M1 words (`trait import from as to try Self`) have no
 /// `TokenKind`, so they fall through to `Name` here (grammar §1.3). `print` and
-/// `panic` are intentionally not keywords.
+/// `panic` are intentionally not keywords. `returns` was dropped as a keyword in
+/// M2 (function results now use `->`), so it too lexes as a plain `Name`.
 fn keyword_kind(text: &str) -> Option<TokenKind> {
     Some(match text {
         "fn" => TokenKind::Fn,
@@ -890,7 +897,6 @@ fn keyword_kind(text: &str) -> Option<TokenKind> {
         "enum" => TokenKind::Enum,
         "impl" => TokenKind::Impl,
         "return" => TokenKind::Return,
-        "returns" => TokenKind::Returns,
         "if" => TokenKind::If,
         "elif" => TokenKind::Elif,
         "else" => TokenKind::Else,
@@ -933,13 +939,33 @@ mod tests {
 
     #[test]
     fn keywords_vs_names() {
-        let ks = kinds("fn val struct enum impl return returns if elif else match while for in break continue and or not is true false null self\n");
+        let ks = kinds("fn val struct enum impl return if elif else match while for in break continue and or not is true false null self\n");
         use TokenKind::*;
         let expected = vec![
-            Fn, Val, Struct, Enum, Impl, Return, Returns, If, Elif, Else, Match, While, For, In,
+            Fn, Val, Struct, Enum, Impl, Return, If, Elif, Else, Match, While, For, In,
             Break, Continue, And, Or, Not, Is, True, False, Null, SelfKw, Newline, Eof,
         ];
         assert_eq!(ks, expected);
+    }
+
+    #[test]
+    fn returns_is_now_a_plain_name() {
+        // `returns` was dropped as a keyword in M2 — it lexes as an identifier.
+        use TokenKind::*;
+        assert_eq!(kinds("returns\n"), vec![Name("returns".into()), Newline, Eof]);
+    }
+
+    #[test]
+    fn question_dot_vs_question() {
+        // `?.` is one token; a lone `?` (nullable suffix) stays separate from a
+        // following `.field` access when whitespace intervenes.
+        use TokenKind::*;
+        assert_eq!(
+            kinds("x?.y\n"),
+            vec![Name("x".into()), QuestionDot, Name("y".into()), Newline, Eof]
+        );
+        // `Int?` then a newline: a bare `?` with no following `.`.
+        assert_eq!(kinds("Int?\n"), vec![Name("Int".into()), Question, Newline, Eof]);
     }
 
     #[test]
@@ -1047,12 +1073,12 @@ mod tests {
 
     #[test]
     fn maximal_munch_operators() {
-        let ks = kinds("== != <= >= < > -> ** .. ..= . + - * / % = : , ? ( ) [ ] { }\n");
+        let ks = kinds("== != <= >= < > -> ** .. ..= . + - * / % = : , ? ?. ( ) [ ] { }\n");
         use TokenKind::*;
         let expected = vec![
             EqEq, NotEq, LtEq, GtEq, Lt, Gt, Arrow, StarStar, DotDot, DotDotEq, Dot, Plus, Minus,
-            Star, Slash, Percent, Eq, Colon, Comma, Question, LParen, RParen, LBracket, RBracket,
-            LBrace, RBrace, Newline, Eof,
+            Star, Slash, Percent, Eq, Colon, Comma, Question, QuestionDot, LParen, RParen, LBracket,
+            RBracket, LBrace, RBrace, Newline, Eof,
         ];
         assert_eq!(ks, expected);
     }
@@ -1458,7 +1484,7 @@ enum Expr:
     Mul(Expr, Expr)
     Div(Expr, Expr)
 
-fn eval(e: Expr) returns Float:
+fn eval(e: Expr) -> Float:
     return match e:
         Num(n):    n
         Add(a, b): eval(a) + eval(b)

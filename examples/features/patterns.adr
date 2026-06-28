@@ -1,0 +1,40 @@
+## Pattern & match enhancements (M2 Wave 2-A):
+## a match guard, an or-pattern, and a nested destructure.
+
+enum Tree:
+    Leaf(Int)
+    Node(Tree, Tree)
+
+## Classify a number with a guarded arm and an or-pattern.
+fn classify(n: Int) -> String:
+    return match n:
+        x if x > 9:        "big"          # guard: only fires when x > 9
+        0:                 "zero"
+        1 or 2 or 3:       "small"         # or-pattern over literals
+        _:                 "other"
+
+## Sum the leaves of a tree by destructuring nested variants.
+fn sum(t: Tree) -> Int:
+    return match t:
+        .Leaf(v):       v
+        .Node(l, r):    sum(l) + sum(r)    # nested: l and r are Trees
+
+## A node whose two leaves are equal is "balanced" (guard over a destructure).
+fn describe(t: Tree) -> String:
+    return match t:
+        .Node(.Leaf(a), .Leaf(b)) if a == b:  "balanced"   # nested + guard
+        .Leaf(v):                              "leaf"
+        _:                                     "node"
+
+fn main():
+    print(classify(42))     # big
+    print(classify(0))      # zero
+    print(classify(2))      # small
+    print(classify(7))      # other
+
+    t = Tree.Node(Tree.Leaf(3), Tree.Node(Tree.Leaf(4), Tree.Leaf(5)))
+    print(sum(t))           # 12
+
+    print(describe(Tree.Node(Tree.Leaf(2), Tree.Leaf(2))))   # balanced
+    print(describe(Tree.Node(Tree.Leaf(2), Tree.Leaf(3))))   # node
+    print(describe(Tree.Leaf(9)))                            # leaf

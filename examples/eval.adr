@@ -6,7 +6,7 @@ enum Expr:
     Mul(Expr, Expr)
     Div(Expr, Expr)
 
-fn eval(e: Expr) returns Float:
+fn eval(e: Expr) -> Float:
     return match e:
         .Num(n):    n
         .Add(a, b): eval(a) + eval(b)

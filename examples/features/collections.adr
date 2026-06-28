@@ -1,0 +1,52 @@
+## Collections & comprehensions (M2 Wave 1): Map / Set / tuple literals,
+## a list comprehension with a filter, a function-typed parameter taking a
+## lambda, default + named arguments, and `for (k, v)` tuple destructuring.
+##
+## Note: the iterator method table (`map`/`filter`/`.items()`/…) lands with
+## Wave 1-A. Here we show the *surface* those build on — literals,
+## comprehensions, tuples, destructuring, and passable lambdas — iterating the
+## (name, cost) pairs as a literal list of tuples rather than `prices.items()`.
+
+## A function-typed parameter: `f` maps an Int to an Int. A lambda or a named
+## `fn` may be passed and called (typed-lite: not statically checked).
+fn apply_to_each(xs: List[Int], f: (Int) -> Int) -> List[Int]:
+    return [f(x) for x in xs]
+
+## Default + named arguments: `step` defaults to 1, overridable by name.
+fn advance(start: Int, step: Int = 1) -> Int:
+    return start + step
+
+fn main():
+    # Tuple literal + destructuring binder.
+    val pair = (3, 4)
+    val (a, b) = pair
+    print(a + b)                       # 7
+
+    # A grouped expression is NOT a tuple (no comma).
+    print((1 + 2) * 3)                 # 9
+
+    # List comprehension with a filter.
+    squares = [x * x for x in 1..=5 if x != 3]
+    print(squares)                     # [1, 4, 16, 25]
+
+    # A passable lambda flowing into a function-typed parameter.
+    doubled = apply_to_each([1, 2, 3], n -> n * 2)
+    print(doubled)                     # [2, 4, 6]
+
+    # Default argument used, then overridden by name.
+    print(advance(10))                 # 11
+    print(advance(10, step: 5))        # 15
+
+    # Map and Set literals construct (an empty `{}` is a Map; `{x, …}` a Set).
+    prices = {"apple": 3, "pear": 2, "fig": 5}
+    sizes = {1, 2, 2, 3}               # a Set, deduplicated to {1, 2, 3}
+
+    # `for (k, v)` tuple destructuring over a list of (name, cost) pairs.
+    total = 0
+    for (name, cost) in [("apple", 3), ("pear", 2), ("fig", 5)]:
+        print("{name}: {cost}")
+        total = total + cost
+    print("total = {total}")           # total = 10
+
+    # Equality on tuples is structural.
+    print(pair == (3, 4))              # true

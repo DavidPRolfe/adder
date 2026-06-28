@@ -154,7 +154,6 @@ pub enum TokenKind {
     Enum,
     Impl,
     Return,
-    Returns,
     If,
     Elif,
     Else,
@@ -210,6 +209,10 @@ pub enum TokenKind {
     LBrace,      // {
     RBrace,      // }
     Question,    // ?
+    /// `?.` — the safe-call operator (M2). Lexed when `?` is immediately
+    /// followed by `.`. The parser consumes it in M2 Wave 2 (`x?.field`); until
+    /// then it is only produced by the lexer.
+    QuestionDot, // ?.
 
     // ----- Synthetic layout tokens (§1.2) -----
     /// End of a logical line.

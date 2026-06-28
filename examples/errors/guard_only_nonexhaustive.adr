@@ -1,0 +1,17 @@
+## A guarded arm does not count toward exhaustiveness: with no `_`, the only
+## arm for `Blue` being guarded leaves the match non-exhaustive — a compile-time
+## check error. Adding `_` (or an unguarded `.Blue` arm) would fix it.
+
+enum Color:
+    Red
+    Green
+    Blue
+
+fn name(c: Color) -> String:
+    return match c:
+        .Red:           "red"
+        .Green:         "green"
+        .Blue if true:  "blue"      # guarded — does NOT cover Blue
+
+fn main():
+    print(name(Color.Red))

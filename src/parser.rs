@@ -232,11 +232,22 @@ impl<'a> Parser<'a> {
                 Ok(())
             }
             TokenKind::Eof | TokenKind::Dedent => Ok(()),
+            // The statement's expression ended with a block that consumed its own
+            // terminating `Dedent` — e.g. a block-form `match` used as a binding /
+            // `return` / expression RHS (`label = match x: …`). The block already
+            // terminated the statement, so no separate `Newline` precedes the next
+            // sibling statement; accept without consuming a token.
+            _ if matches!(self.prev_kind(), Some(TokenKind::Dedent)) => Ok(()),
             other => Err(Diagnostic::parse(
                 format!("expected end of line, found {}", describe(other)),
                 self.cur_span(),
             )),
         }
+    }
+
+    /// The kind of the most-recently-consumed token, if any.
+    fn prev_kind(&self) -> Option<&TokenKind> {
+        self.pos.checked_sub(1).and_then(|i| self.tokens.get(i)).map(|t| &t.kind)
     }
 
     /// `simple_stmt = binding | assignment | return | break | continue | expr`.
@@ -285,10 +296,29 @@ impl<'a> Parser<'a> {
         Ok(Stmt { kind: StmtKind::Return(Some(expr)), span })
     }
 
-    /// `val NAME [":" type] "=" expr`.
+    /// `val ( NAME | "(" NAME, … ")" ) [":" type] "=" expr` (the tuple-binder
+    /// form `val (a, b) = pair` is M2; a tuple binder may not carry a type
+    /// annotation).
     fn parse_val_binding(&mut self) -> PResult<Stmt> {
         let kw = self.cur_span();
         self.advance(); // `val`
+        // Tuple destructure binder: `val (a, b, …) = …`.
+        if matches!(self.peek(), TokenKind::LParen) {
+            let binder = self.parse_tuple_binder("a `val` binding")?;
+            self.expect(&TokenKind::Eq, "`=` in a `val` binding")?;
+            let value = self.parse_expr()?;
+            let span = kw.merge(value.span);
+            return Ok(Stmt {
+                kind: StmtKind::Binding(Binding {
+                    name: binder_label(&binder),
+                    binder,
+                    is_val: true,
+                    ty: None,
+                    value,
+                }),
+                span,
+            });
+        }
         let (name, _) = self.expect_name("a binding name after `val`")?;
         let ty = if self.eat(&TokenKind::Colon) {
             Some(self.parse_type()?)
@@ -299,9 +329,42 @@ impl<'a> Parser<'a> {
         let value = self.parse_expr()?;
         let span = kw.merge(value.span);
         Ok(Stmt {
-            kind: StmtKind::Binding(Binding { name, is_val: true, ty, value }),
+            kind: StmtKind::Binding(Binding {
+                binder: Binder::Name(name.clone()),
+                name,
+                is_val: true,
+                ty,
+                value,
+            }),
             span,
         })
+    }
+
+    /// Parse a tuple binder `"(" NAME, … ")"` (two or more names), used by `val`
+    /// and `for` destructuring. The current token is the opening `(`.
+    fn parse_tuple_binder(&mut self, ctx: &str) -> PResult<Binder> {
+        self.expect(&TokenKind::LParen, "`(` to open a tuple binder")?;
+        let mut names = Vec::new();
+        if !matches!(self.peek(), TokenKind::RParen) {
+            loop {
+                let (n, _) = self.expect_name("a name in the tuple binder")?;
+                names.push(n);
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                if matches!(self.peek(), TokenKind::RParen) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RParen, "`)` to close a tuple binder")?;
+        if names.len() < 2 {
+            return Err(Diagnostic::parse(
+                format!("a tuple binder in {ctx} needs at least two names"),
+                self.cur_span(),
+            ));
+        }
+        Ok(Binder::Tuple(names))
     }
 
     /// Lookahead: does a line starting with `NAME` begin a binding/assignment?
@@ -407,7 +470,13 @@ impl<'a> Parser<'a> {
             let value = self.parse_expr()?;
             let span = start.merge(value.span);
             return Ok(Stmt {
-                kind: StmtKind::Binding(Binding { name, is_val: false, ty: Some(ty), value }),
+                kind: StmtKind::Binding(Binding {
+                    binder: Binder::Name(name.clone()),
+                    name,
+                    is_val: false,
+                    ty: Some(ty),
+                    value,
+                }),
                 span,
             });
         }
@@ -425,7 +494,13 @@ impl<'a> Parser<'a> {
             // reassign. We always emit a `Binding` for the bare-name form so the
             // surface shape is faithful.
             Ok(Stmt {
-                kind: StmtKind::Binding(Binding { name, is_val: false, ty: None, value }),
+                kind: StmtKind::Binding(Binding {
+                    binder: Binder::Name(name.clone()),
+                    name,
+                    is_val: false,
+                    ty: None,
+                    value,
+                }),
                 span,
             })
         } else {
@@ -601,20 +676,32 @@ impl<'a> Parser<'a> {
         Ok(Stmt { kind: StmtKind::While(WhileStmt { cond, body }), span })
     }
 
-    /// `for NAME in expr ":" suite`.
+    /// `for ( NAME | "(" NAME, … ")" ) in expr ":" suite` (the tuple-binder form
+    /// `for (k, v) in m.items()` is M2).
     fn parse_for(&mut self) -> PResult<Stmt> {
         let start = self.cur_span();
         self.advance(); // `for`
-        let (var, _) = self.expect_name("a loop variable name after `for`")?;
+        let binder = if matches!(self.peek(), TokenKind::LParen) {
+            self.parse_tuple_binder("a `for` loop")?
+        } else {
+            let (var, _) = self.expect_name("a loop variable name after `for`")?;
+            Binder::Name(var)
+        };
         self.expect(&TokenKind::In, "`in` after the `for` variable")?;
         let iter = self.parse_expr()?;
         self.expect(&TokenKind::Colon, "`:` after the `for` iterable")?;
         let body = self.parse_suite()?;
         let span = start.merge(body.span);
-        Ok(Stmt { kind: StmtKind::For(ForStmt { var, iter, body }), span })
+        Ok(Stmt {
+            kind: StmtKind::For(ForStmt { var: binder_label(&binder), binder, iter, body }),
+            span,
+        })
     }
 
-    /// `fn NAME "(" [param_list] ")" [returns type] ":" suite`.
+    /// `fn NAME "(" [param_list] ")" [ "->" type ] ":" suite`.
+    ///
+    /// The result clause is `-> type` (M2; the M1 `returns` keyword was
+    /// dropped). A function with no `->` returns unit, exactly as before.
     fn parse_fn_decl(&mut self) -> PResult<FnDecl> {
         let start = self.cur_span();
         let doc = self.cur_doc();
@@ -624,7 +711,7 @@ impl<'a> Parser<'a> {
         let params = self.parse_params()?;
         self.expect(&TokenKind::RParen, "`)` to close the parameter list")?;
 
-        let returns = if matches!(self.peek(), TokenKind::Returns) {
+        let returns = if matches!(self.peek(), TokenKind::Arrow) {
             self.advance();
             Some(self.parse_type()?)
         } else {
@@ -637,7 +724,8 @@ impl<'a> Parser<'a> {
         Ok(FnDecl { name, params, returns, body, doc, span })
     }
 
-    /// `param_list = param , …` ; `param = "self" | NAME ":" type`.
+    /// `param_list = param , …` ; `param = "self" | NAME ":" type [ "=" expr ]`.
+    /// A trailing `= expr` is a **default value** (M2 Wave 1).
     fn parse_params(&mut self) -> PResult<Vec<Param>> {
         let mut params = Vec::new();
         if matches!(self.peek(), TokenKind::RParen) {
@@ -653,7 +741,13 @@ impl<'a> Parser<'a> {
                     let (name, _) = self.expect_name("a parameter name")?;
                     self.expect(&TokenKind::Colon, "`:` after the parameter name")?;
                     let ty = self.parse_type()?;
-                    params.push(Param::Named { name, ty });
+                    // Optional default value: `NAME: type = expr` (M2 Wave 1).
+                    let default = if self.eat(&TokenKind::Eq) {
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    params.push(Param::Named { name, ty, default });
                 }
                 other => {
                     return Err(Diagnostic::parse(
@@ -1181,7 +1275,20 @@ impl<'a> Parser<'a> {
                     let (name, nspan) = self.expect_name("a member name after `.`")?;
                     let span = expr.span.merge(nspan);
                     expr = Expr {
-                        kind: ExprKind::Member { base: Box::new(expr), name },
+                        kind: ExprKind::Member { base: Box::new(expr), name, safe: false },
+                        span,
+                    };
+                }
+                // `?.` (safe access, M2 Wave 2): same shape as `.`, but `safe:
+                // true`. A safe method call `x?.m(args)` is a `Call` whose callee
+                // is this safe `Member` — the `LParen` arm above picks it up on
+                // the next loop turn, exactly as for a plain `.m()`.
+                TokenKind::QuestionDot => {
+                    self.advance();
+                    let (name, nspan) = self.expect_name("a member name after `?.`")?;
+                    let span = expr.span.merge(nspan);
+                    expr = Expr {
+                        kind: ExprKind::Member { base: Box::new(expr), name, safe: true },
                         span,
                     };
                 }
@@ -1222,7 +1329,10 @@ impl<'a> Parser<'a> {
     }
 
     /// `primary = INT | FLOAT | BOOL | NULL | STRING | self | NAME
-    ///          | list_literal | "(" expr ")" | match_expr`.
+    ///          | list_literal | brace_literal | tuple_or_group | match_expr`.
+    ///
+    /// `brace_literal` is a `Map`/`Set` literal or a set/map comprehension;
+    /// `tuple_or_group` is `( expr )` grouping or `( a, b, … )` tuple (M2).
     fn parse_primary(&mut self) -> PResult<Expr> {
         let span = self.cur_span();
         match self.peek().clone() {
@@ -1259,14 +1369,9 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(Expr { kind: ExprKind::Name(s), span })
             }
-            TokenKind::LBracket => self.parse_list_literal(),
-            TokenKind::LParen => {
-                self.advance();
-                let inner = self.parse_expr()?;
-                let close = self.expect(&TokenKind::RParen, "`)` to close a grouped expression")?;
-                // Grouping is transparent; widen the span to include the parens.
-                Ok(Expr { kind: inner.kind, span: span.merge(close.span) })
-            }
+            TokenKind::LBracket => self.parse_list_literal_or_comprehension(),
+            TokenKind::LBrace => self.parse_brace_literal(),
+            TokenKind::LParen => self.parse_tuple_or_group(),
             TokenKind::Match => self.parse_match_expr(),
             other => Err(Diagnostic::parse(
                 format!("expected an expression, found {}", describe(&other)),
@@ -1275,10 +1380,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `list_literal = "[" [ expr , … ] "]"`.
-    fn parse_list_literal(&mut self) -> PResult<Expr> {
+    /// `list_literal = "[" [ expr , … ] "]"`, or a **list comprehension**
+    /// `"[" expr "for" binder "in" iter [ "if" cond ] "]"` (M2). A top-level
+    /// `for` inside the brackets selects the comprehension form.
+    fn parse_list_literal_or_comprehension(&mut self) -> PResult<Expr> {
         let start = self.cur_span();
         self.expect(&TokenKind::LBracket, "`[` to open a list literal")?;
+        if self.brace_has_top_level_for(&TokenKind::RBracket) {
+            let output = ComprehensionOutput::List(Box::new(self.parse_expr()?));
+            return self.finish_comprehension(output, start, &TokenKind::RBracket, "list");
+        }
         let mut items = Vec::new();
         if !matches!(self.peek(), TokenKind::RBracket) {
             loop {
@@ -1293,6 +1404,197 @@ impl<'a> Parser<'a> {
         }
         let close = self.expect(&TokenKind::RBracket, "`]` to close a list literal")?;
         Ok(Expr { kind: ExprKind::List(items), span: start.merge(close.span) })
+    }
+
+    /// A brace-delimited literal (M2): a `Map` `{ k: v, … }`, a `Set`
+    /// `{ x, … }`, the empty `Map` `{}`, or a set/map comprehension. The current
+    /// token is the opening `{`.
+    ///
+    /// Disambiguation, by the first token(s) after `{`:
+    /// - `}`                     → empty **Map** (`{}` is never a set; use `Set()`).
+    /// - top-level `for` present → comprehension (map form if a top-level `:`
+    ///   precedes the `for`, else set form).
+    /// - first element is `expr ":"` → **Map** literal.
+    /// - otherwise               → **Set** literal.
+    fn parse_brace_literal(&mut self) -> PResult<Expr> {
+        let start = self.cur_span();
+        self.expect(&TokenKind::LBrace, "`{` to open a map or set literal")?;
+
+        // Empty `{}` is an empty Map.
+        if matches!(self.peek(), TokenKind::RBrace) {
+            let close = self.advance();
+            return Ok(Expr { kind: ExprKind::Map(Vec::new()), span: start.merge(close.span) });
+        }
+
+        // Comprehension? A top-level `for` inside the braces selects it.
+        if self.brace_has_top_level_for(&TokenKind::RBrace) {
+            // Map comprehension iff a top-level `:` precedes that `for`.
+            if self.brace_colon_before_for() {
+                let key = self.parse_expr()?;
+                self.expect(&TokenKind::Colon, "`:` between a map comprehension's key and value")?;
+                let value = self.parse_expr()?;
+                let output = ComprehensionOutput::Map {
+                    key: Box::new(key),
+                    value: Box::new(value),
+                };
+                return self.finish_comprehension(output, start, &TokenKind::RBrace, "map");
+            }
+            let output = ComprehensionOutput::Set(Box::new(self.parse_expr()?));
+            return self.finish_comprehension(output, start, &TokenKind::RBrace, "set");
+        }
+
+        // Map vs. Set literal: a Map's first element is `expr ":"`. Parse the
+        // first expression, then peek for `:`.
+        let first = self.parse_expr()?;
+        if matches!(self.peek(), TokenKind::Colon) {
+            self.advance(); // `:`
+            let first_val = self.parse_expr()?;
+            let mut pairs = vec![(first, first_val)];
+            while self.eat(&TokenKind::Comma) {
+                if matches!(self.peek(), TokenKind::RBrace) {
+                    break;
+                }
+                let k = self.parse_expr()?;
+                self.expect(&TokenKind::Colon, "`:` between a map key and value")?;
+                let v = self.parse_expr()?;
+                pairs.push((k, v));
+            }
+            let close = self.expect(&TokenKind::RBrace, "`}` to close a map literal")?;
+            Ok(Expr { kind: ExprKind::Map(pairs), span: start.merge(close.span) })
+        } else {
+            let mut items = vec![first];
+            while self.eat(&TokenKind::Comma) {
+                if matches!(self.peek(), TokenKind::RBrace) {
+                    break;
+                }
+                items.push(self.parse_expr()?);
+            }
+            let close = self.expect(&TokenKind::RBrace, "`}` to close a set literal")?;
+            Ok(Expr { kind: ExprKind::Set(items), span: start.merge(close.span) })
+        }
+    }
+
+    /// Parse the tail of a comprehension after the output expression has been
+    /// consumed: `"for" binder "in" iter [ "if" cond ] CLOSE`. `close` is the
+    /// matching `]` / `}`; `kind` labels it for error messages.
+    fn finish_comprehension(
+        &mut self,
+        output: ComprehensionOutput,
+        start: Span,
+        close: &TokenKind,
+        kind: &str,
+    ) -> PResult<Expr> {
+        self.expect(&TokenKind::For, "`for` in a comprehension")?;
+        let binder = self.parse_comprehension_binder()?;
+        self.expect(&TokenKind::In, "`in` in a comprehension")?;
+        // Parse the iterable and the filter below ternary precedence: a trailing
+        // `if cond` is the comprehension's filter, not a ternary on the iterable
+        // (`… for x in 1..=5 if x != 3` must not read `1..=5 if … else …`).
+        let iter = self.parse_or()?;
+        let cond = if matches!(self.peek(), TokenKind::If) {
+            self.advance();
+            Some(Box::new(self.parse_or()?))
+        } else {
+            None
+        };
+        let close_tok = self.expect(close, "the bracket closing a comprehension")?;
+        let _ = kind;
+        Ok(Expr {
+            kind: ExprKind::Comprehension(Comprehension {
+                output,
+                binder,
+                iter: Box::new(iter),
+                cond,
+            }),
+            span: start.merge(close_tok.span),
+        })
+    }
+
+    /// Parse a comprehension binder: a single `NAME` or a tuple `"(" NAME, … ")"`.
+    fn parse_comprehension_binder(&mut self) -> PResult<ComprehensionBinder> {
+        if matches!(self.peek(), TokenKind::LParen) {
+            match self.parse_tuple_binder("a comprehension")? {
+                Binder::Tuple(names) => Ok(ComprehensionBinder::Tuple(names)),
+                // `parse_tuple_binder` never yields `Name`, but keep total.
+                Binder::Name(n) => Ok(ComprehensionBinder::Name(n)),
+            }
+        } else {
+            let (name, _) = self.expect_name("a comprehension binder name")?;
+            Ok(ComprehensionBinder::Name(name))
+        }
+    }
+
+    /// Lookahead: is there a top-level `for` keyword inside the just-opened
+    /// bracket group? The cursor sits just past the opening bracket; we scan to
+    /// the matching `close`, ignoring `for`s nested in inner bracket groups.
+    fn brace_has_top_level_for(&self, close: &TokenKind) -> bool {
+        let mut depth = 0i32;
+        let mut i = 0;
+        loop {
+            let k = self.peek_n(i);
+            match k {
+                TokenKind::Eof => return false,
+                _ if k == close && depth == 0 => return false,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => depth -= 1,
+                TokenKind::For if depth == 0 => return true,
+                _ => {}
+            }
+            // A stray over-close means our open's close is reached.
+            if depth < 0 {
+                return false;
+            }
+            i += 1;
+        }
+    }
+
+    /// Lookahead for a brace comprehension: does a top-level `:` appear before
+    /// the top-level `for`? Distinguishes a map comprehension (`{k: v for …}`)
+    /// from a set comprehension (`{x for …}`). The cursor sits just past `{`.
+    fn brace_colon_before_for(&self) -> bool {
+        let mut depth = 0i32;
+        let mut i = 0;
+        loop {
+            match self.peek_n(i) {
+                TokenKind::Eof => return false,
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return false;
+                    }
+                }
+                TokenKind::For if depth == 0 => return false,
+                TokenKind::Colon if depth == 0 => return true,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+
+    /// `( expr )` grouping or `( a, b, … )` tuple (M2). The current token is `(`.
+    /// A single parenthesized expression stays pure grouping; a tuple needs at
+    /// least one comma (two or more elements).
+    fn parse_tuple_or_group(&mut self) -> PResult<Expr> {
+        let start = self.cur_span();
+        self.advance(); // `(`
+        let first = self.parse_expr()?;
+        if matches!(self.peek(), TokenKind::Comma) {
+            // Tuple: collect the remaining comma-separated elements.
+            let mut items = vec![first];
+            while self.eat(&TokenKind::Comma) {
+                if matches!(self.peek(), TokenKind::RParen) {
+                    break; // tolerate a trailing comma
+                }
+                items.push(self.parse_expr()?);
+            }
+            let close = self.expect(&TokenKind::RParen, "`)` to close a tuple")?;
+            Ok(Expr { kind: ExprKind::Tuple(items), span: start.merge(close.span) })
+        } else {
+            let close = self.expect(&TokenKind::RParen, "`)` to close a grouped expression")?;
+            // Grouping is transparent; widen the span to include the parens.
+            Ok(Expr { kind: first.kind, span: start.merge(close.span) })
+        }
     }
 
     /// `match_expr = "match" expr ":" NEWLINE INDENT match_arm+ DEDENT`.
@@ -1321,12 +1623,24 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `match_arm = pattern ":" arm_body`.
+    /// `match_arm = pattern [ "if" expr ] ":" arm_body`.
     /// `arm_body = expr NEWLINE | NEWLINE INDENT statement+ DEDENT` — both stored
     /// as a [`Block`]. An inline expr arm is wrapped as a one-statement block.
+    ///
+    /// A match guard (`pattern if cond:`) makes the arm conditional: it only
+    /// fires when `cond` is `Bool` and true (M2 Wave 2). A guarded arm does not
+    /// count toward exhaustiveness ([`crate::checks`]).
     fn parse_match_arm(&mut self) -> PResult<MatchArm> {
         let start = self.cur_span();
         let pattern = self.parse_pattern()?;
+
+        // Optional `if COND` guard between the pattern and the `:`.
+        let guard = if self.eat(&TokenKind::If) {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+
         self.expect(&TokenKind::Colon, "`:` after a match pattern")?;
 
         let body = if matches!(self.peek(), TokenKind::Newline) {
@@ -1342,17 +1656,47 @@ impl<'a> Parser<'a> {
         };
 
         let span = start.merge(body.span);
-        Ok(MatchArm { pattern, body, span })
+        Ok(MatchArm { pattern, guard, body, span })
     }
 
     // =====================================================================
-    // Patterns (§5.8) — flat
+    // Patterns (§5.8) — recursive as of M2
     // =====================================================================
 
-    /// `pattern = "_" | NULL | literal_pattern | NAME | variant_pattern`.
+    /// `pattern = primary_pattern { "or" primary_pattern }`.
+    ///
+    /// The top level is an **or-pattern** (M2 Wave 2): one or more alternatives
+    /// separated by `or`, matching if *any* alternative matches. A single
+    /// alternative collapses to that pattern (no `Or` wrapper). Or-patterns
+    /// parse here both as a whole-arm pattern and, because variant sub-patterns
+    /// recurse through [`Self::parse_pattern`], inside sub-patterns too. Literal
+    /// alternatives (`1 or 2`) and variant alternatives (`.A or .B`) both work.
     fn parse_pattern(&mut self) -> PResult<Pattern> {
+        let first = self.parse_pattern_primary()?;
+        if !matches!(self.peek(), TokenKind::Or) {
+            return Ok(first);
+        }
+        let start = first.span;
+        let mut alts = vec![first];
+        while self.eat(&TokenKind::Or) {
+            alts.push(self.parse_pattern_primary()?);
+        }
+        let span = start.merge(alts.last().unwrap().span);
+        Ok(Pattern { kind: PatternKind::Or(alts), span })
+    }
+
+    /// `primary_pattern = "_" | NULL | literal_pattern | NAME | variant_pattern
+    /// | tuple_pattern`.
+    ///
+    /// A single alternative of an or-pattern. A parenthesized form is either a
+    /// **tuple pattern** `(p1, p2, …)` (≥2 elements) or grouping `(p)` (which is
+    /// transparent — `(p)` is just `p`). Variant sub-patterns are recursive, so
+    /// nested destructuring like `.Some(.Pair(a, b))` parses here.
+    fn parse_pattern_primary(&mut self) -> PResult<Pattern> {
         let span = self.cur_span();
         match self.peek().clone() {
+            // Tuple pattern `(p1, p2, …)`, or grouping `(p)`.
+            TokenKind::LParen => self.parse_tuple_pattern(),
             TokenKind::Null => {
                 self.advance();
                 Ok(Pattern { kind: PatternKind::Null, span })
@@ -1435,10 +1779,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse the optional `"(" sub_pattern , … ")"` payload of a variant pattern.
+    /// Parse the optional `"(" pattern , … ")"` payload of a variant pattern.
     /// A niladic variant (no parens) yields an empty `subs` list. Returns the
     /// sub-patterns and the span of the variant's last token.
-    fn parse_variant_subs(&mut self, name_span: Span) -> PResult<(Vec<SubPattern>, Span)> {
+    ///
+    /// As of M2 the sub-patterns are full [`Pattern`]s (recursive), so a
+    /// variant's payload may itself contain variant/tuple/or patterns (nested
+    /// destructuring). The flat M1 cases (`_`, a name, `null`, a literal) are
+    /// produced unchanged because [`Self::parse_pattern`] yields the same base
+    /// kinds for them.
+    fn parse_variant_subs(&mut self, name_span: Span) -> PResult<(Vec<Pattern>, Span)> {
         if !matches!(self.peek(), TokenKind::LParen) {
             return Ok((Vec::new(), name_span));
         }
@@ -1446,7 +1796,7 @@ impl<'a> Parser<'a> {
         let mut subs = Vec::new();
         if !matches!(self.peek(), TokenKind::RParen) {
             loop {
-                subs.push(self.parse_sub_pattern()?);
+                subs.push(self.parse_pattern()?);
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -1459,60 +1809,28 @@ impl<'a> Parser<'a> {
         Ok((subs, close.span))
     }
 
-    /// `sub_pattern = "_" | NAME | NULL | literal_pattern` — no nesting.
-    fn parse_sub_pattern(&mut self) -> PResult<SubPattern> {
-        let span = self.cur_span();
-        match self.peek().clone() {
-            TokenKind::Null => {
-                self.advance();
-                Ok(SubPattern::Null)
-            }
-            TokenKind::Int(n) => {
-                self.advance();
-                Ok(SubPattern::Literal(LitPattern::Int(n)))
-            }
-            TokenKind::Float(f) => {
-                self.advance();
-                Ok(SubPattern::Literal(LitPattern::Float(f)))
-            }
-            TokenKind::True => {
-                self.advance();
-                Ok(SubPattern::Literal(LitPattern::Bool(true)))
-            }
-            TokenKind::False => {
-                self.advance();
-                Ok(SubPattern::Literal(LitPattern::Bool(false)))
-            }
-            TokenKind::Str(parts) => {
-                self.advance();
-                let s = string_parts_as_literal(&parts).ok_or_else(|| {
-                    Diagnostic::parse(
-                        "a string pattern may not contain interpolation",
-                        span,
-                    )
-                })?;
-                Ok(SubPattern::Literal(LitPattern::Str(s)))
-            }
-            TokenKind::Name(name) => {
-                self.advance();
-                if name == "_" {
-                    Ok(SubPattern::Wildcard)
-                } else {
-                    // No nested variant patterns: a `(` here is a syntax error.
-                    if matches!(self.peek(), TokenKind::LParen) {
-                        return Err(Diagnostic::parse(
-                            "nested variant patterns are not allowed in M1 \
-                             (sub-patterns are `_`, a name, `null`, or a literal)",
-                            self.cur_span(),
-                        ));
-                    }
-                    Ok(SubPattern::Binding(name))
+    /// Parse a parenthesized pattern: a **tuple pattern** `(p1, p2, …)` (≥2
+    /// elements, destructured element-wise against a tuple value) or, with no
+    /// comma, transparent grouping `(p)` (which is just `p`). Mirrors the
+    /// expression-side `(a, b)` tuple / `(e)` grouping distinction.
+    fn parse_tuple_pattern(&mut self) -> PResult<Pattern> {
+        let start = self.cur_span();
+        self.advance(); // `(`
+        let first = self.parse_pattern()?;
+        if matches!(self.peek(), TokenKind::Comma) {
+            let mut elems = vec![first];
+            while self.eat(&TokenKind::Comma) {
+                if matches!(self.peek(), TokenKind::RParen) {
+                    break; // tolerate a trailing comma
                 }
+                elems.push(self.parse_pattern()?);
             }
-            other => Err(Diagnostic::parse(
-                format!("expected a simple sub-pattern, found {}", describe(&other)),
-                span,
-            )),
+            let close = self.expect(&TokenKind::RParen, "`)` to close a tuple pattern")?;
+            Ok(Pattern { kind: PatternKind::Tuple(elems), span: start.merge(close.span) })
+        } else {
+            let close = self.expect(&TokenKind::RParen, "`)` to close a grouped pattern")?;
+            // Grouping is transparent; widen the span to include the parens.
+            Ok(Pattern { kind: first.kind, span: start.merge(close.span) })
         }
     }
 
@@ -1521,14 +1839,57 @@ impl<'a> Parser<'a> {
     // =====================================================================
 
     /// `type = base_type [ "?" ]`.
+    ///
+    /// A parenthesized type is one of (M2): the unit type `()`; a grouped type
+    /// `(T)`; a tuple type `(A, B, …)` (≥2 components); or — when a `->` follows
+    /// the closing `)` — a **function type** `(T1, …) -> R` (zero params is
+    /// `() -> R`). Function/tuple types are parsed for documentation and
+    /// higher-order signatures; they are not statically checked in M2.
     fn parse_type(&mut self) -> PResult<Type> {
         let start = self.cur_span();
         let base = match self.peek().clone() {
             TokenKind::LParen => {
-                // Unit type `()`.
-                self.advance();
-                self.expect(&TokenKind::RParen, "`)` to close the unit type `()`")?;
-                BaseType::Unit
+                // Parse the parenthesized component list, then decide the shape.
+                self.advance(); // `(`
+                let mut comps = Vec::new();
+                if !matches!(self.peek(), TokenKind::RParen) {
+                    loop {
+                        comps.push(self.parse_type()?);
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
+                        if matches!(self.peek(), TokenKind::RParen) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&TokenKind::RParen, "`)` to close a parenthesized type")?;
+
+                // `(…) -> R` is a function type (any param count, including 0).
+                if matches!(self.peek(), TokenKind::Arrow) {
+                    self.advance(); // `->`
+                    let ret = self.parse_type()?;
+                    BaseType::Fn { params: comps, ret: Box::new(ret) }
+                } else {
+                    match comps.len() {
+                        0 => BaseType::Unit,
+                        // `(T)` is grouping: return the inner type, applying any
+                        // trailing `?` to it (so `(T)?` is `T?`).
+                        1 => {
+                            let mut inner = comps.into_iter().next().unwrap();
+                            if matches!(self.peek(), TokenKind::Question) {
+                                let q = self.cur_span();
+                                self.advance();
+                                inner.nullable = true;
+                                inner.span = start.merge(q);
+                            } else {
+                                inner.span = start.merge(inner.span);
+                            }
+                            return Ok(inner);
+                        }
+                        _ => BaseType::Tuple(comps),
+                    }
+                }
             }
             TokenKind::Name(name) => {
                 self.advance();
@@ -1627,6 +1988,17 @@ impl<'a> Parser<'a> {
 // Free helpers
 // ===========================================================================
 
+/// The single-name *label* for a [`Binder`], used to fill the `name`/`var`
+/// fields kept for the common single-name case (see [`crate::ast::Binding`] /
+/// [`crate::ast::ForStmt`]). A tuple binder yields its first name; the empty
+/// case (never produced — tuple binders need ≥2 names) yields `"_"`.
+fn binder_label(binder: &Binder) -> String {
+    match binder {
+        Binder::Name(n) => n.clone(),
+        Binder::Tuple(names) => names.first().cloned().unwrap_or_else(|| "_".to_string()),
+    }
+}
+
 /// Build a `Binary` expression node, merging operand spans.
 fn make_binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     let span = lhs.span.merge(rhs.span);
@@ -1672,7 +2044,6 @@ fn describe(kind: &TokenKind) -> String {
         TokenKind::Enum => "`enum`".into(),
         TokenKind::Impl => "`impl`".into(),
         TokenKind::Return => "`return`".into(),
-        TokenKind::Returns => "`returns`".into(),
         TokenKind::If => "`if`".into(),
         TokenKind::Elif => "`elif`".into(),
         TokenKind::Else => "`else`".into(),
@@ -1716,6 +2087,7 @@ fn describe(kind: &TokenKind) -> String {
         TokenKind::LBrace => "`{`".into(),
         TokenKind::RBrace => "`}`".into(),
         TokenKind::Question => "`?`".into(),
+        TokenKind::QuestionDot => "`?.`".into(),
         TokenKind::Newline => "end of line".into(),
         TokenKind::Indent => "an indent".into(),
         TokenKind::Dedent => "a dedent".into(),
@@ -2021,11 +2393,11 @@ mod tests {
         }
     }
 
-    // ----- fn with params + returns --------------------------------------
+    // ----- fn with params + result type (`->`) ---------------------------
 
     #[test]
     fn fn_with_params_and_returns() {
-        // fn add(a: Int, b: Int) returns Int:
+        // fn add(a: Int, b: Int) -> Int:
         //     return a
         let toks = vec![
             t(TokenKind::Fn),
@@ -2039,7 +2411,7 @@ mod tests {
             t(TokenKind::Colon),
             name("Int"),
             t(TokenKind::RParen),
-            t(TokenKind::Returns),
+            t(TokenKind::Arrow),
             name("Int"),
             t(TokenKind::Colon),
             nl(),
@@ -2556,9 +2928,9 @@ mod tests {
                     assert_eq!(enum_name.as_deref(), Some("E"));
                     assert_eq!(name, "V");
                     assert_eq!(subs.len(), 3);
-                    assert!(matches!(subs[0], SubPattern::Wildcard));
-                    assert!(matches!(subs[1], SubPattern::Null));
-                    assert!(matches!(&subs[2], SubPattern::Literal(LitPattern::Int(_))));
+                    assert!(matches!(subs[0].kind, PatternKind::Wildcard));
+                    assert!(matches!(subs[1].kind, PatternKind::Null));
+                    assert!(matches!(&subs[2].kind, PatternKind::Literal(LitPattern::Int(_))));
                 }
                 other => panic!("expected variant pattern, got {:?}", other),
             },
@@ -2640,13 +3012,13 @@ mod tests {
 
     #[test]
     fn unit_type() {
-        // fn f() returns (): 0   -- the `()` unit type after `returns`
+        // fn f() -> (): 0   -- the `()` unit type after `->`
         let toks = vec![
             t(TokenKind::Fn),
             name("f"),
             t(TokenKind::LParen),
             t(TokenKind::RParen),
-            t(TokenKind::Returns),
+            t(TokenKind::Arrow),
             t(TokenKind::LParen),
             t(TokenKind::RParen),
             t(TokenKind::Colon),
@@ -2689,6 +3061,73 @@ mod tests {
                 other => panic!("expected call inside index, got {:?}", other),
             },
             other => panic!("expected index at top, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn safe_member_access() {
+        // a?.b  -- a safe member access (`safe: true`)
+        let e = parse_expr_tokens(vec![
+            name("a"),
+            t(TokenKind::QuestionDot),
+            name("b"),
+        ]);
+        match &e.kind {
+            ExprKind::Member { name, safe, base } => {
+                assert_eq!(name, "b");
+                assert!(*safe, "`?.` should set safe: true");
+                assert!(matches!(&base.kind, ExprKind::Name(n) if n == "a"));
+            }
+            other => panic!("expected a safe member, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn safe_method_call() {
+        // a?.b(c)  -- a Call whose callee is a safe Member
+        let e = parse_expr_tokens(vec![
+            name("a"),
+            t(TokenKind::QuestionDot),
+            name("b"),
+            t(TokenKind::LParen),
+            name("c"),
+            t(TokenKind::RParen),
+        ]);
+        match &e.kind {
+            ExprKind::Call { callee, args } => {
+                assert_eq!(args.len(), 1);
+                match &callee.kind {
+                    ExprKind::Member { name, safe, .. } => {
+                        assert_eq!(name, "b");
+                        assert!(*safe, "`?.m(...)` callee should be a safe Member");
+                    }
+                    other => panic!("expected safe member callee, got {:?}", other),
+                }
+            }
+            other => panic!("expected a call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn safe_chain_nests_left_to_right() {
+        // a?.b?.c  -- the inner `a?.b` is the base of the outer `?.c`
+        let e = parse_expr_tokens(vec![
+            name("a"),
+            t(TokenKind::QuestionDot),
+            name("b"),
+            t(TokenKind::QuestionDot),
+            name("c"),
+        ]);
+        match &e.kind {
+            ExprKind::Member { name, safe, base } => {
+                assert_eq!(name, "c");
+                assert!(*safe);
+                assert!(matches!(
+                    &base.kind,
+                    ExprKind::Member { name, safe: true, .. } if name == "b"
+                ));
+            }
+            other => panic!("expected an outer safe member, got {:?}", other),
         }
     }
 
@@ -2850,7 +3289,7 @@ mod tests {
         // Regression: a program with NO doc comments parses with every `doc`
         // field `None` and nothing else perturbed.
         let bare = parse_src(
-            "enum Expr:\n    Num(Float)\n    Add(Expr, Expr)\n\nfn eval(e: Expr) returns Float:\n    1\n",
+            "enum Expr:\n    Num(Float)\n    Add(Expr, Expr)\n\nfn eval(e: Expr) -> Float:\n    1\n",
         );
         assert_eq!(bare.stmts.len(), 2);
         for stmt in &bare.stmts {
@@ -2892,5 +3331,343 @@ mod tests {
         // Strip the docs and everything else (name, params, body, span) matches.
         let stripped = FnDecl { doc: None, ..f_doc };
         assert_eq!(stripped, f_none);
+    }
+
+    // =====================================================================
+    // M2 Wave 1-B — collections, comprehensions, tuple binders, function/
+    // tuple types, default + named args. These go through the real lexer.
+    // =====================================================================
+
+    /// Lex + parse real source, returning the parse diagnostics (asserting it
+    /// lexed and the parse *failed*).
+    fn parse_src_err(src: &str) -> Vec<Diagnostic> {
+        let toks = lex(src).expect("source should lex");
+        match parse(&toks) {
+            Ok(p) => panic!("expected parse error, got program: {:?}", p),
+            Err(e) => e,
+        }
+    }
+
+    /// Pull the single expr-statement expression out of a one-line program.
+    fn expr_of(src: &str) -> Expr {
+        let p = parse_src(src);
+        match &only_stmt(&p).kind {
+            StmtKind::Expr(e) => e.clone(),
+            // A bare binding/expr: unwrap a `val x = <expr>` initializer.
+            StmtKind::Binding(b) => b.value.clone(),
+            other => panic!("expected an expr/binding statement, got {:?}", other),
+        }
+    }
+
+    // ----- brace literals: map / set / empty -----------------------------
+
+    #[test]
+    fn empty_braces_is_empty_map() {
+        match expr_of("val m = {}\n").kind {
+            ExprKind::Map(pairs) => assert!(pairs.is_empty()),
+            other => panic!("expected empty Map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_literal_pairs() {
+        match expr_of("val m = {1: 2, 3: 4}\n").kind {
+            ExprKind::Map(pairs) => assert_eq!(pairs.len(), 2),
+            other => panic!("expected Map, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_literal_elements() {
+        match expr_of("val s = {1, 2, 3}\n").kind {
+            ExprKind::Set(items) => assert_eq!(items.len(), 3),
+            other => panic!("expected Set, got {:?}", other),
+        }
+    }
+
+    // ----- tuples vs grouping --------------------------------------------
+
+    #[test]
+    fn tuple_literal_two_or_more() {
+        match expr_of("val t = (1, 2, 3)\n").kind {
+            ExprKind::Tuple(items) => assert_eq!(items.len(), 3),
+            other => panic!("expected Tuple, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn single_paren_is_grouping_not_tuple() {
+        // `(1 + 2)` is grouping: the inner Binary survives, not a 1-tuple.
+        match expr_of("val g = (1 + 2)\n").kind {
+            ExprKind::Binary { .. } => {}
+            other => panic!("expected grouped Binary, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn trailing_comma_tuple() {
+        match expr_of("val t = (1, 2,)\n").kind {
+            ExprKind::Tuple(items) => assert_eq!(items.len(), 2),
+            other => panic!("expected Tuple, got {:?}", other),
+        }
+    }
+
+    // ----- comprehensions ------------------------------------------------
+
+    #[test]
+    fn list_comprehension_with_filter() {
+        let c = match expr_of("val xs = [x * x for x in 1..=5 if x != 3]\n").kind {
+            ExprKind::Comprehension(c) => c,
+            other => panic!("expected Comprehension, got {:?}", other),
+        };
+        assert!(matches!(c.output, ComprehensionOutput::List(_)));
+        assert!(matches!(c.binder, ComprehensionBinder::Name(ref n) if n == "x"));
+        assert!(c.cond.is_some());
+    }
+
+    #[test]
+    fn set_comprehension() {
+        match expr_of("val s = {x % 3 for x in xs}\n").kind {
+            ExprKind::Comprehension(c) => {
+                assert!(matches!(c.output, ComprehensionOutput::Set(_)));
+                assert!(c.cond.is_none());
+            }
+            other => panic!("expected Comprehension, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn map_comprehension() {
+        match expr_of("val m = {k: k for k in ks}\n").kind {
+            ExprKind::Comprehension(c) => {
+                assert!(matches!(c.output, ComprehensionOutput::Map { .. }));
+            }
+            other => panic!("expected Comprehension, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn comprehension_tuple_binder() {
+        match expr_of("val xs = [a for (a, b) in pairs]\n").kind {
+            ExprKind::Comprehension(c) => {
+                assert!(matches!(c.binder, ComprehensionBinder::Tuple(ref ns) if ns == &["a", "b"]));
+            }
+            other => panic!("expected Comprehension, got {:?}", other),
+        }
+    }
+
+    // ----- function & tuple types ----------------------------------------
+
+    #[test]
+    fn function_type_param() {
+        // fn apply(f: (Int) -> Int, x: Int) -> Int: f(x)
+        let p = parse_src("fn apply(f: (Int) -> Int, x: Int) -> Int:\n    f(x)\n");
+        let f = match &only_stmt(&p).kind {
+            StmtKind::Fn(f) => f.clone(),
+            other => panic!("expected fn, got {:?}", other),
+        };
+        match &f.params[0] {
+            Param::Named { ty, .. } => match &ty.base {
+                BaseType::Fn { params, ret } => {
+                    assert_eq!(params.len(), 1);
+                    assert!(matches!(&ret.base, BaseType::Named { name, .. } if name == "Int"));
+                }
+                other => panic!("expected Fn type, got {:?}", other),
+            },
+            other => panic!("expected named param, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn zero_arg_function_type() {
+        let p = parse_src("fn run(f: () -> Int):\n    f()\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Fn(f) => match &f.params[0] {
+                Param::Named { ty, .. } => {
+                    assert!(matches!(&ty.base, BaseType::Fn { params, .. } if params.is_empty()));
+                }
+                other => panic!("expected named param, got {:?}", other),
+            },
+            other => panic!("expected fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tuple_type_annotation() {
+        let p = parse_src("fn f(p: (Int, String)):\n    p\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Fn(f) => match &f.params[0] {
+                Param::Named { ty, .. } => {
+                    assert!(matches!(&ty.base, BaseType::Tuple(c) if c.len() == 2));
+                }
+                other => panic!("expected named param, got {:?}", other),
+            },
+            other => panic!("expected fn, got {:?}", other),
+        }
+    }
+
+    // ----- default + named call args -------------------------------------
+
+    #[test]
+    fn param_default_value() {
+        let p = parse_src("fn greet(name: String, greeting: String = \"Hi\"):\n    name\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Fn(f) => match &f.params[1] {
+                Param::Named { default, .. } => assert!(default.is_some()),
+                other => panic!("expected named param, got {:?}", other),
+            },
+            other => panic!("expected fn, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn named_call_arg_parses() {
+        // A named arg in an ordinary call site parses to Arg::Named.
+        match expr_of("val r = greet(\"Ada\", greeting: \"Hi\")\n").kind {
+            ExprKind::Call { args, .. } => {
+                assert!(matches!(&args[1], Arg::Named { name, .. } if name == "greeting"));
+            }
+            other => panic!("expected Call, got {:?}", other),
+        }
+    }
+
+    // ----- tuple binders in val / for ------------------------------------
+
+    #[test]
+    fn val_tuple_binder() {
+        let p = parse_src("val (a, b) = pair\n");
+        match &only_stmt(&p).kind {
+            StmtKind::Binding(b) => {
+                assert!(matches!(&b.binder, Binder::Tuple(ns) if ns == &["a", "b"]));
+                assert!(b.is_val);
+            }
+            other => panic!("expected binding, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn for_tuple_binder() {
+        let p = parse_src("for (k, v) in items:\n    k\n");
+        match &only_stmt(&p).kind {
+            StmtKind::For(f) => {
+                assert!(matches!(&f.binder, Binder::Tuple(ns) if ns == &["k", "v"]));
+                assert_eq!(f.var, "k"); // label mirrors the first name
+            }
+            other => panic!("expected for, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn one_name_tuple_binder_rejected() {
+        // `val (a) = …` is not a tuple binder (needs ≥2 names) — a parse error.
+        let errs = parse_src_err("val (a) = x\n");
+        assert!(!errs.is_empty());
+    }
+
+    // =====================================================================
+    // M2 Wave 2-A — match guards, or-patterns, tuple / nested patterns.
+    // =====================================================================
+
+    /// Pull the arms of a `match` out of a one-binding program
+    /// (`val r = match …`).
+    fn match_arms_of(src: &str) -> Vec<MatchArm> {
+        match expr_of(src).kind {
+            ExprKind::Match(m) => m.arms,
+            other => panic!("expected a match expr, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_guard_parses() {
+        // A guarded arm records its `if cond` between the pattern and the `:`.
+        let arms = match_arms_of("val r = match n:\n    x if x > 0: 1\n    _: 0\n");
+        assert!(matches!(&arms[0].pattern.kind, PatternKind::Binding(n) if n == "x"));
+        assert!(arms[0].guard.is_some(), "first arm should be guarded");
+        assert!(arms[1].guard.is_none(), "wildcard arm is unguarded");
+    }
+
+    #[test]
+    fn or_pattern_of_literals() {
+        // `1 or 2 or 3` is a single or-pattern with three alternatives.
+        let arms = match_arms_of("val r = match n:\n    1 or 2 or 3: 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Or(alts) => {
+                assert_eq!(alts.len(), 3);
+                assert!(alts
+                    .iter()
+                    .all(|a| matches!(a.kind, PatternKind::Literal(_))));
+            }
+            other => panic!("expected an or-pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn or_pattern_of_variants() {
+        // `.A or .B` covers two leading-dot variant alternatives.
+        let arms = match_arms_of("val r = match c:\n    .A or .B: 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Or(alts) => {
+                assert_eq!(alts.len(), 2);
+                assert!(matches!(
+                    &alts[0].kind,
+                    PatternKind::Variant { name, .. } if name == "A"
+                ));
+                assert!(matches!(
+                    &alts[1].kind,
+                    PatternKind::Variant { name, .. } if name == "B"
+                ));
+            }
+            other => panic!("expected an or-pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn tuple_pattern_parses() {
+        // `(a, b)` destructures a pair element-wise.
+        let arms = match_arms_of("val r = match p:\n    (a, b): 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Tuple(elems) => {
+                assert_eq!(elems.len(), 2);
+                assert!(matches!(&elems[0].kind, PatternKind::Binding(n) if n == "a"));
+            }
+            other => panic!("expected a tuple pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn grouped_pattern_is_transparent() {
+        // `(p)` with no comma is grouping, not a 1-tuple.
+        let arms = match_arms_of("val r = match p:\n    (a): 1\n    _: 0\n");
+        assert!(matches!(&arms[0].pattern.kind, PatternKind::Binding(n) if n == "a"));
+    }
+
+    #[test]
+    fn nested_variant_subpattern() {
+        // A variant sub-pattern may itself be a variant pattern.
+        let arms = match_arms_of("val r = match v:\n    .Some(.Pair(a, b)): 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Variant { name, subs, .. } => {
+                assert_eq!(name, "Some");
+                assert_eq!(subs.len(), 1);
+                assert!(matches!(
+                    &subs[0].kind,
+                    PatternKind::Variant { name, .. } if name == "Pair"
+                ));
+            }
+            other => panic!("expected a nested variant pattern, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn or_pattern_inside_variant_sub() {
+        // An or-pattern nests inside a variant sub-pattern: `.Tag(1 or 2)`.
+        let arms = match_arms_of("val r = match v:\n    .Tag(1 or 2): 1\n    _: 0\n");
+        match &arms[0].pattern.kind {
+            PatternKind::Variant { subs, .. } => {
+                assert_eq!(subs.len(), 1);
+                assert!(matches!(&subs[0].kind, PatternKind::Or(alts) if alts.len() == 2));
+            }
+            other => panic!("expected a variant pattern, got {:?}", other),
+        }
     }
 }

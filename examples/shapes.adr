@@ -11,7 +11,7 @@ struct Rectangle:
 
 # Methods live in an `impl` block — the one and only place methods are defined.
 impl Rectangle:
-    fn area(self) returns Float:
+    fn area(self) -> Float:
         return self.width * self.height
 
     ## Mutates the rectangle in place through `self`.
@@ -20,11 +20,11 @@ impl Rectangle:
         self.height = self.height * factor
 
     ## Reads self and builds a fresh, scaled rectangle (self is unchanged).
-    fn scaled(self, factor: Float) returns Rectangle:
+    fn scaled(self, factor: Float) -> Rectangle:
         return Rectangle(self.origin, self.width * factor, self.height * factor)
 
     ## Calls another method on self and interpolates fields.
-    fn describe(self) returns String:
+    fn describe(self) -> String:
         return "Rectangle at ({self.origin.x}, {self.origin.y}) — area {self.area()}"
 
 fn main():

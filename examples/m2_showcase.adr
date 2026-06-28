@@ -1,0 +1,30 @@
+## M2 showcase: data flows the Adder way.
+##
+## The Milestone-2 counterpart to examples/eval.adr — it exercises the whole
+## data-flow feel in one program: function-typed parameters, lambdas passed to a
+## `fn`, an eager filter/map/sum pipeline, a list comprehension with a filter, a
+## `Map` literal, tuple destructuring in a `for`, and a guarded `match` arm.
+
+fn pipeline(xs: List[Int], keep: (Int) -> Bool, f: (Int) -> Int) -> Int:
+    return xs.filter(keep).map(f).sum()
+
+fn main():
+    nums = [1, 2, 3, 4, 5, 6]
+
+    # iterator pipeline with passable lambdas
+    result = pipeline(nums, n -> n % 2 == 0, n -> n * n)
+    print("sum of even squares = {result}")
+
+    # comprehension with a filter
+    squares = [x * x for x in 1..=5 if x != 3]
+    print(squares)
+
+    # Map + tuples via .items(), with a guarded match arm
+    prices = {"apple": 3, "pear": 2, "fig": 5}
+    for (name, cost) in prices.items():
+        label = match cost:
+            c if c >= 5: "pricey"
+            _:           "cheap"
+        print("{name}: {label}")
+
+    print("total = {prices.values().sum()}")

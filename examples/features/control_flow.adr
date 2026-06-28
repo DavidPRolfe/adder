@@ -2,7 +2,7 @@
 ## list, break, and continue.
 
 ## if / elif / else with Bool conditions (no truthiness).
-fn classify(n: Int) returns String:
+fn classify(n: Int) -> String:
     if n < 0:
         return "negative"
     elif n == 0:

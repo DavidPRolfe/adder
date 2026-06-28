@@ -76,7 +76,7 @@ Reserved keywords (a `NAME`-shaped token matching one of these lexes as that key
 not as `NAME`). M1 uses this subset of the language's reserved set:
 
 ```
-fn  val  struct  enum  impl  return  returns
+fn  val  struct  enum  impl  return
 if  elif  else  match  while  for  in
 break  continue  and  or  not  is
 true  false  null  self
@@ -131,7 +131,7 @@ interpolation = "{" expr "}"           # expr is parsed by the syntactic grammar
 ==  !=  <  <=  >  >=        # comparison
 +   -   *   /   %   **      # arithmetic
 =                          # assignment / binding
-->                         # lambda arrow
+->                         # function/mapping arrow (lambda body, fn result type)
 ..  ..=                    # ranges
 :   ,   .                  # block colon, separators, member access
 (  )   [  ]   {  }         # grouping / call / index / collection
@@ -240,14 +240,14 @@ a range (`0..n`, `0..=n`) or a `List`; only a single loop variable `NAME` is sup
 ### 4.3 Functions
 
 ```
-fn_decl  = "fn" NAME "(" [ param_list ] ")" [ "returns" type ] ":" suite
+fn_decl  = "fn" NAME "(" [ param_list ] ")" [ "->" type ] ":" suite
 param_list = param , …
 param    = "self"                       # method receiver: first param only, untyped
          | NAME ":" type                # fully annotated, positional
 ```
 
 - Signatures are fully annotated: every non-`self` parameter has a type; a result type
-  is given by `returns type`, and omitted for a unit-returning function. M1 has **no**
+  is given by `-> type`, and omitted for a unit-returning function. M1 has **no**
   default or named function parameters.
 - `self` is only valid as the first parameter of a method declared inside an `impl`
   body (§4.6).
@@ -444,8 +444,8 @@ variants be matched precisely.
 
 ## 6. Types
 
-Types appear only at the annotation boundaries: parameter types, `returns`, struct
-fields, enum payloads, and the occasional local annotation (`xs: List[Int] = []`).
+Types appear only at the annotation boundaries: parameter types, the `->` result type,
+struct fields, enum payloads, and the occasional local annotation (`xs: List[Int] = []`).
 
 ```
 type       = base_type [ "?" ]                 # trailing ? = nullable (§8 of ref)
@@ -459,7 +459,7 @@ base_type  = NAME [ "[" type , … "]" ]         # name, optionally generic-appl
   (`List[Int]`, and — if Map/Set land in M1 — `Map[K, V]`, `Set[T]`). **User-defined**
   generics (declaring `[T]` on your own `fn`/`struct`) are deferred to M2; this rule is
   type *use*, not type-parameter *declaration*.
-- `()` is the unit type, the result of a function with no `returns` clause.
+- `()` is the unit type, the result of a function with no `->` clause.
 
 ---
 
@@ -474,7 +474,7 @@ enum Expr:                       # enum_decl → variant_decl × 4
     Mul(Expr, Expr)
     Div(Expr, Expr)
 
-fn eval(e: Expr) returns Float:  # fn_decl with param + returns
+fn eval(e: Expr) -> Float:       # fn_decl with param + -> result type
     return match e:              # return_stmt of a match_expr (primary)
         .Num(n):    n            # leading-dot variant_pattern → inline arm_body
         .Add(a, b): eval(a) + eval(b)
@@ -485,13 +485,13 @@ fn eval(e: Expr) returns Float:  # fn_decl with param + returns
                 panic("division by zero")   # call_form
             eval(a) / divisor    # final expression = arm value
 
-fn main():                       # fn_decl, no returns (unit)
+fn main():                       # fn_decl, no -> clause (unit)
     program = Expr.Mul(Expr.Add(Expr.Num(1.0), Expr.Num(2.0)), Expr.Num(3.0))  # qualified construction
     print("= {eval(program)}")   # print form + STRING with interpolation
 ```
 
 Every construct above is covered: indentation suite, `enum`/variant payloads, `fn`
-signature with/without `returns`, `match` as a returned expression with both inline and
+signature with/without an `->` result type, `match` as a returned expression with both inline and
 block arms, flat variant patterns, an `if` with a `Bool` comparison, `panic`/`print`
 forms, inferred bindings, construction calls, and an interpolated string.
 

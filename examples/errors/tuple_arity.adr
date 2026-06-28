@@ -1,0 +1,5 @@
+## Destructuring a 3-tuple into 2 names — must be a runtime error.
+
+fn main():
+    val (a, b) = (1, 2, 3)
+    print(a)
