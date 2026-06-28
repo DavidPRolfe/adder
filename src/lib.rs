@@ -19,9 +19,9 @@
 //!
 //! ## Explicit ownership decisions
 //!
-//! - **`checks.rs`** owns the two compile-time analyses and *only* those:
+//! - **`checks/`** owns the two compile-time analyses and *only* those:
 //!   match-exhaustiveness over enums, and null-narrowing of `T?` values.
-//! - **`interp.rs`** owns all *runtime* enforcement and behavior:
+//! - **`interp/`** owns all *runtime* enforcement and behavior:
 //!   - `val`-immutability (reassigning a `val` is a runtime error),
 //!   - `Bool`-condition enforcement (`if`/`elif`/`while`/ternary; no
 //!     truthiness),

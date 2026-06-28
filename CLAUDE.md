@@ -7,15 +7,17 @@ is the authority for surface syntax. Don't duplicate the spec here — link to i
 
 ## Pipeline
 
-`lex -> parse -> check -> run`. Each stage owns one file; `lib.rs` has the
-canonical ownership notes.
+`lex -> parse -> check -> run`. Each stage owns one module; `lib.rs` has the
+canonical ownership notes. `lexer` is a single file; `parser`, `checks`, and
+`interp` are module directories (each with a `mod.rs`, topic submodules, and a
+`tests.rs`). The stage entry points are unchanged.
 
-| Stage | Entry point | File | Owns |
+| Stage | Entry point | Module | Owns |
 | --- | --- | --- | --- |
 | lex   | `lexer::lex`     | `src/lexer.rs`  | source -> tokens; indentation (`Indent`/`Dedent`/`Newline`), string-interpolation re-lexing |
-| parse | `parser::parse`  | `src/parser.rs` | tokens -> `ast::Program`; parses interpolation sub-exprs |
-| check | `checks::check`  | `src/checks.rs` | the two static checks (below) and *only* those |
-| run   | `interp::run`    | `src/interp.rs` | the tree-walker + all runtime enforcement (below) |
+| parse | `parser::parse`  | `src/parser/`   | tokens -> `ast::Program`; parses interpolation sub-exprs (`stmt`/`control`/`item`/`expr`/`pattern`/`types`) |
+| check | `checks::check`  | `src/checks/`   | the two static checks (below) and *only* those (`exhaustiveness`/`null_narrowing`) |
+| run   | `interp::run`    | `src/interp/`   | the tree-walker + all runtime enforcement (below) (`value`/`env`/`show`/`builtins`) |
 
 **Contracts** (shared; changing them ripples downstream):
 
@@ -28,19 +30,21 @@ canonical ownership notes.
   every stage and the CLI. `Phase` labels are `lex error` / `parse error` /
   `check error` / `runtime error`.
 
-CLI driver is `src/main.rs` (`run_pipeline`); usage is `adder <file.adr>`, exits
-non-zero on any diagnostic.
+CLI driver is `src/main.rs`; it delegates to the in-process pipeline entry point
+`adder::run_source(src, out)` in `lib.rs` (which writes program output to a
+caller-supplied `Write`, so tests/embedders can capture it). Usage is
+`adder <file.adr>`, exits non-zero on any diagnostic.
 
 ## Where rules are enforced
 
-**Compile-time (`checks.rs`)** — exactly two analyses, run before execution:
+**Compile-time (`checks/`)** — exactly two analyses, run before execution:
 
 1. **Match exhaustiveness** — a `match` over an enum must cover every variant (or
    `_`).
 2. **Null-narrowing** — using a `T?` where a `T` is required is an error unless
    narrowed (`if x is not null:`) or defaulted (`.or_else(...)`).
 
-**Runtime (`interp.rs`)** — everything else, including:
+**Runtime (`interp/`)** — everything else, including:
 
 - `val`-immutability (reassigning a `val` is a runtime error),
 - Bool-condition enforcement (`if`/`elif`/`while`/ternary; no truthiness),
@@ -50,7 +54,7 @@ non-zero on any diagnostic.
 - entry point: run top-level statements, then call `main()` if a zero-arg `main`
   exists.
 
-Do not move runtime rules into `checks.rs` or vice versa — the split is
+Do not move runtime rules into `checks/` or vice versa — the split is
 deliberate (the project is "typed-lite", not a full checker).
 
 ## Syntax cheat-sheet (do not regress to older forms)
