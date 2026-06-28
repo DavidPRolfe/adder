@@ -116,12 +116,9 @@ fn print_doc(kind: &str, name: &str, doc: &Option<String>) {
     }
 }
 
-/// Drive all four stages, normalizing each stage's error shape into a
-/// `Vec<Diagnostic>` so they render uniformly.
+/// Drive all four stages in-process, writing program output to stdout. Thin
+/// wrapper over [`adder::run_source`] (which normalizes each stage's error shape
+/// into a `Vec<Diagnostic>` so they render uniformly).
 fn run_pipeline(src: &str) -> Result<(), Vec<Diagnostic>> {
-    let tokens = adder::lexer::lex(src).map_err(|d| vec![d])?;
-    let program = adder::parser::parse(&tokens)?;
-    adder::checks::check(&program)?;
-    adder::interp::run(&program).map_err(|d| vec![d])?;
-    Ok(())
+    adder::run_source(src, &mut std::io::stdout().lock())
 }

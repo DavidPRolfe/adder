@@ -6,26 +6,8 @@
 //! Like `tests/acceptance.rs`, this spawns the compiled `adder` binary on the
 //! fixture and asserts on its stdout, so it covers the whole pipeline.
 
-use std::path::PathBuf;
-use std::process::{Command, Output};
-
-/// Run the `adder` binary on a fixture file (path relative to the crate root).
-fn run_fixture(rel: &str) -> Output {
-    let bin = env!("CARGO_BIN_EXE_adder");
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push(rel);
-    Command::new(bin)
-        .arg(&path)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run {bin} on {}: {e}", path.display()))
-}
-
-fn stdout(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-fn stderr(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stderr).into_owned()
-}
+mod common;
+use common::{run_fixture, stderr, stdout};
 
 #[test]
 fn ledger_runs_and_prints_expected_lines() {

@@ -46,3 +46,35 @@ pub mod interp;
 pub mod lexer;
 pub mod parser;
 pub mod token;
+
+/// Run the whole pipeline (`lex → parse → check → run`) in-process on `src`,
+/// writing program output (the `print` builtin) to `out`.
+///
+/// This is the in-process entry point that both the CLI and embedders use: the
+/// CLI passes `&mut std::io::stdout().lock()`; a test or host can pass a
+/// `&mut Vec<u8>` to capture output without touching real stdout. Each stage's
+/// error shape is normalized into a `Vec<Diagnostic>` so callers can render them
+/// uniformly.
+pub fn run_source(
+    src: &str,
+    out: &mut dyn std::io::Write,
+) -> Result<(), Vec<error::Diagnostic>> {
+    let tokens = lexer::lex(src).map_err(|d| vec![d])?;
+    let program = parser::parse(&tokens)?;
+    checks::check(&program)?;
+    interp::run(&program, out).map_err(|d| vec![d])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// In-process capture: running a tiny program through [`run_source`] into a
+    /// `Vec<u8>` yields exactly the program's stdout. Guards the writer injection
+    /// (output goes to the supplied writer, not process stdout).
+    #[test]
+    fn run_source_captures_print_output() {
+        let mut buf: Vec<u8> = Vec::new();
+        super::run_source(r#"print("hi")"#, &mut buf).expect("program should run");
+        assert_eq!(String::from_utf8(buf).unwrap(), "hi\n");
+    }
+}

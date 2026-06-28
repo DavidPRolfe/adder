@@ -5,26 +5,8 @@
 //! Self-contained: the tiny `run_fixture`/`stdout` helpers below mirror
 //! `tests/acceptance.rs` so this file stands alone.
 
-use std::path::PathBuf;
-use std::process::{Command, Output};
-
-/// Run the `adder` binary on a fixture file (path relative to the crate root).
-fn run_fixture(rel: &str) -> Output {
-    let bin = env!("CARGO_BIN_EXE_adder");
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push(rel);
-    Command::new(bin)
-        .arg(&path)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run {bin} on {}: {e}", path.display()))
-}
-
-fn stdout(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-fn stderr(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stderr).into_owned()
-}
+mod common;
+use common::{run_fixture, stderr, stdout};
 
 /// The headline pipeline: `filter(...).map(...).sum()` over a list literal with
 /// passable lambdas yields `56`, plus the rest of the showcase lines.

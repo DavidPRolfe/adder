@@ -54,6 +54,7 @@
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::io::Write;
 use std::rc::Rc;
 
 use num_bigint::BigInt;
@@ -321,8 +322,15 @@ struct Registry {
 }
 
 /// The interpreter's per-run state.
-struct Interp {
+///
+/// Holds the declaration registry plus the output sink. Program output (from the
+/// `print` builtin) is written through `out` — a caller-supplied writer — rather
+/// than directly to process stdout, so output can be captured in-process (tests,
+/// embedding) without touching real stdout.
+struct Interp<'a> {
     registry: Registry,
+    /// Where program output goes (`print`). Borrowed for the run's duration.
+    out: &'a mut dyn Write,
 }
 
 // ===========================================================================
@@ -331,8 +339,12 @@ struct Interp {
 
 /// Run a checked [`Program`]: seed the prelude, execute top-level statements in
 /// order, then call a zero-arg `main()` if one exists.
-pub fn run(program: &Program) -> Result<(), Diagnostic> {
-    let mut interp = Interp { registry: Registry::default() };
+///
+/// Program output (the `print` builtin) is written to `out`, a caller-supplied
+/// writer. Pass `&mut std::io::stdout().lock()` for the normal CLI behaviour, or
+/// a `&mut Vec<u8>` to capture output in-process.
+pub fn run(program: &Program, out: &mut dyn Write) -> Result<(), Diagnostic> {
+    let mut interp = Interp { registry: Registry::default(), out };
     let root = Scope::new_root();
 
     // 1. Seed the prelude.
@@ -381,7 +393,7 @@ fn seed_prelude(root: &Env) {
     env_define(root, "Set", Value::Builtin(Builtin::Set), false);
 }
 
-impl Interp {
+impl<'a> Interp<'a> {
     /// Collect all top-level declarations into the registry.
     fn collect_decls(&mut self, program: &Program) {
         for stmt in &program.stmts {
@@ -1493,7 +1505,9 @@ impl Interp {
         match b {
             Builtin::Print => {
                 let rendered: Vec<String> = args.iter().map(show).collect();
-                println!("{}", rendered.join(" "));
+                writeln!(self.out, "{}", rendered.join(" ")).map_err(|e| {
+                    Diagnostic::runtime(format!("failed to write output: {}", e), span)
+                })?;
                 Ok(Value::Unit)
             }
             Builtin::Panic => {
@@ -2881,8 +2895,14 @@ mod tests {
     }
 
     /// Build a fresh interpreter + root env with the prelude seeded.
-    fn fresh() -> (Interp, Env) {
-        let interp = Interp { registry: Registry::default() };
+    ///
+    /// Output is discarded into a leaked `Sink` so the returned `Interp` can be
+    /// `'static` and every call site stays `let (mut interp, root) = fresh();`.
+    /// These tests evaluate expressions / statements directly and never assert on
+    /// `print` output, so a discarding sink is sufficient.
+    fn fresh() -> (Interp<'static>, Env) {
+        let out: &'static mut std::io::Sink = Box::leak(Box::new(std::io::sink()));
+        let interp = Interp { registry: Registry::default(), out };
         let root = Scope::new_root();
         seed_prelude(&root);
         (interp, root)
@@ -3390,7 +3410,7 @@ mod tests {
             span: sp(),
         };
         let program = Program { stmts: vec![st(StmtKind::Fn(main))] };
-        assert!(run(&program).is_ok());
+        assert!(run(&program, &mut std::io::sink()).is_ok());
     }
 
     #[test]
@@ -3625,7 +3645,8 @@ mod tests {
             stmts: vec![st(StmtKind::Enum(expr_enum)), st(StmtKind::Fn(eval_fn))],
         };
 
-        let mut interp = Interp { registry: Registry::default() };
+        let mut sink = std::io::sink();
+        let mut interp = Interp { registry: Registry::default(), out: &mut sink };
         let root = Scope::new_root();
         seed_prelude(&root);
         interp.collect_decls(&program);
@@ -3773,7 +3794,8 @@ mod tests {
         let program = Program {
             stmts: vec![st(StmtKind::Enum(expr_enum)), st(StmtKind::Fn(eval_fn))],
         };
-        let mut interp = Interp { registry: Registry::default() };
+        let mut sink = std::io::sink();
+        let mut interp = Interp { registry: Registry::default(), out: &mut sink };
         let root = Scope::new_root();
         seed_prelude(&root);
         interp.collect_decls(&program);

@@ -12,26 +12,8 @@
 //! comprehensions, destructuring, default/named args, and passable lambdas, and
 //! assert on the scalar / `List` results those produce.
 
-use std::path::PathBuf;
-use std::process::{Command, Output};
-
-/// Run the `adder` binary on a fixture file (path relative to the crate root).
-fn run_fixture(rel: &str) -> Output {
-    let bin = env!("CARGO_BIN_EXE_adder");
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push(rel);
-    Command::new(bin)
-        .arg(&path)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to run {bin} on {}: {e}", path.display()))
-}
-
-fn stdout(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stdout).into_owned()
-}
-fn stderr(o: &Output) -> String {
-    String::from_utf8_lossy(&o.stderr).into_owned()
-}
+mod common;
+use common::{run_fixture, stderr, stdout};
 
 // ===========================================================================
 // The collections feature example runs cleanly and prints the expected lines.
