@@ -1,0 +1,63 @@
+## Control flow: if/elif/else, ternary, while, for over a range, for over a
+## list, break, and continue.
+
+## if / elif / else with Bool conditions (no truthiness).
+fn classify(n: Int) returns String:
+    if n < 0:
+        return "negative"
+    elif n == 0:
+        return "zero"
+    else:
+        return "positive"
+
+fn main():
+    print(classify(-3))            # negative
+    print(classify(0))             # zero
+    print(classify(7))             # positive
+
+    # Ternary: value-if-cond-else-value.
+    x = 10
+    print("big" if x > 5 else "small")   # big
+
+    # while loop with a mutable accumulator.
+    i = 0
+    sum = 0
+    while i < 5:
+        sum = sum + i
+        i = i + 1
+    print(sum)                     # 10  (0+1+2+3+4)
+
+    # for over a half-open range 0..n.
+    total = 0
+    for k in 0..5:
+        total = total + k
+    print(total)                   # 10
+
+    # for over an inclusive range 0..=n.
+    total2 = 0
+    for k in 0..=5:
+        total2 = total2 + k
+    print(total2)                  # 15  (0+1+2+3+4+5)
+
+    # for over a list.
+    nums = [2, 3, 5, 7]
+    listSum = 0
+    for n in nums:
+        listSum = listSum + n
+    print(listSum)                 # 17
+
+    # break: stop at the first value >= 3.
+    found = -1
+    for k in 0..10:
+        if k >= 3:
+            found = k
+            break
+    print(found)                   # 3
+
+    # continue: sum only even numbers in 0..10.
+    evens = 0
+    for k in 0..10:
+        if k % 2 == 1:
+            continue
+        evens = evens + k
+    print(evens)                   # 20  (0+2+4+6+8)

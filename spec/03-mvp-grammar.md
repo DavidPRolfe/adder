@@ -308,6 +308,12 @@ lambda_params = NAME
 ternary    = or_expr [ "if" or_expr "else" expr ]      # value-if-cond-else-value
 ```
 
+> **Lambdas are deferred to M2** (see [02-mvp-scope.md](02-mvp-scope.md)). The M1
+> implementation already parses and evaluates them as a head start, but they are not
+> part of the validated M1 surface: there is no function *type* (§6) to annotate a
+> parameter with, so a lambda can only be used locally — passing one to a `fn` needs
+> the function type that arrives with iterator pipelines in M2.
+
 ```
 or_expr    = and_expr   { "or"  and_expr }
 and_expr   = not_expr   { "and" not_expr }
@@ -498,6 +504,10 @@ Tracked here so the cuts are explicit and reviewable:
 - **Traits / `impl Trait for Type` / `Self` / `derive`** — only inherent `impl Type:`.
 - **User-declared generics** (`fn f[T]`, `struct S[T]`) and trait bounds.
 - **`Result` / `try` / error propagation** — M1 uses `panic`.
+- **Lambdas / closures** (`x -> expr`, `(a, b) -> expr`) — parsed/evaluated by the M1
+  implementation as a head start, but deferred from the validated M1 surface: with no
+  function type (§6) they can't be passed to a `fn`, so they pair with iterator
+  pipelines in M2.
 - **Lazy pipelines** (`map`/`filter`/`fold`/`.sum()` chains) and **comprehensions** —
   these are method-call / sugar syntax left out of M1 (ordinary `.method()` calls still
   parse via `postfix`, but the iterator prelude is M2).

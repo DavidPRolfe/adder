@@ -56,7 +56,6 @@ inference, and broader static type checking, are a later milestone.
 - `fn` with positional parameters; **fully annotated signatures** (param types +
   `returns` clause; omit `returns` for no result).
 - Explicit `return` and implicit final-expression return.
-- Lambdas `x -> expr` and `(a, b) -> expr`; closures capture by reference.
 
 **Structs**
 - Declaration, named + positional construction, field access, mutable fields,
@@ -96,6 +95,7 @@ inference, and broader static type checking, are a later milestone.
 | Generics + trait bounds | Built-ins can be generic internally; user generics need traits + a checker | M2/M3 |
 | `Result` + `try` | `panic` covers "test the feel"; `try`'s early-return desugaring is non-trivial | M2 |
 | Full type checker + inference | The two MVP checks carry the thesis; full inference is large | M3 |
+| Lambdas / closures (`x -> expr`, `(a, b) -> expr`) | Without a function *type* a lambda can't be passed to a `fn`, so it's only useful once iterator pipelines land. The tree-walker already evaluates them as a head start. | M2 |
 | Lazy iterator pipelines (`map`/`filter`/`fold`) | `for` loops cover iteration; laziness is real interpreter work | M2 |
 | Comprehensions | Pure sugar over `for` | M2 |
 | Default / named arguments | Positional is fine for small programs | M2 |

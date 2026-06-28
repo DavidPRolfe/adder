@@ -1,0 +1,53 @@
+## Structs: positional + named construction, field access, impl methods,
+## a method that mutates self, and default Show rendering via print.
+
+struct Point:
+    x: Float
+    y: Float
+
+struct Counter:
+    value: Int
+
+impl Point:
+    ## Reads two fields and returns a derived value.
+    fn sum(self) returns Float:
+        return self.x + self.y
+
+    ## Reads self, builds a fresh Point (self unchanged).
+    fn shifted(self, dx: Float, dy: Float) returns Point:
+        return Point(self.x + dx, self.y + dy)
+
+impl Counter:
+    ## Mutates self in place through `self.field = ...`.
+    fn bump(self):
+        self.value = self.value + 1
+
+    fn get(self) returns Int:
+        return self.value
+
+fn main():
+    # Positional construction + field access.
+    p = Point(1.0, 2.0)
+    print(p.x)                 # 1.0
+    print(p.y)                 # 2.0
+    print(p.sum())             # 3.0
+
+    # A method returning a new value — p is untouched.
+    q = p.shifted(10.0, 20.0)
+    print(q.sum())             # 33.0
+    print(p.sum())             # 3.0  (unchanged)
+
+    # Named construction.
+    n = Point(x: 5.0, y: 6.0)
+    print(n.sum())             # 11.0
+
+    # A method that mutates self; the caller observes the change.
+    c = Counter(0)
+    c.bump()
+    c.bump()
+    c.bump()
+    print(c.get())             # 3
+
+    # Default Show rendering of a struct via print.
+    print(p)                   # Point(x: 1.0, y: 2.0)
+    print(c)                   # Counter(value: 3)

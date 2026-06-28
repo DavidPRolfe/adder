@@ -1,0 +1,80 @@
+## A tiny bank ledger: accounts, transactions, and a running balance.
+## Exercises enums + exhaustive match, a struct with mutating methods,
+## nullable account lookup with narrowing, loops over a list of records,
+## and string interpolation.
+
+enum Tx:
+    Deposit(amount: Int)
+    Withdraw(amount: Int)
+    Transfer(to: String, amount: Int)
+    Open                              # niladic: account opened, no money moved
+
+struct Account:
+    owner: String
+    balance: Int
+
+impl Account:
+    ## The signed effect of a transaction on THIS account's balance.
+    fn effect(self, t: Tx) returns Int:
+        return match t:
+            .Deposit(amount):      amount
+            .Withdraw(amount):     -amount
+            .Transfer(to, amount): -amount    # money leaves this account
+            .Open:                 0
+
+    ## Mutates self: apply a transaction in place, refusing overdrafts.
+    fn apply(self, t: Tx):
+        delta = self.effect(t)
+        if self.balance + delta < 0:
+            panic("overdraft on {self.owner}'s account")
+        self.balance = self.balance + delta
+
+    fn describe(self) returns String:
+        return "{self.owner}: {self.balance} credits"
+
+## A human-readable label for a transaction (drives the printed log).
+fn label(t: Tx) returns String:
+    return match t:
+        .Deposit(amount):      "deposit {amount}"
+        .Withdraw(amount):     "withdraw {amount}"
+        .Transfer(to, amount): "transfer {amount} to {to}"
+        .Open:                 "open account"
+
+## Find an account by owner. Returns null when nobody matches (T? result).
+fn find(accounts: List[Account], owner: String) returns Account?:
+    for a in accounts:
+        if a.owner is owner:
+            return a
+    return null
+
+fn main():
+    alice = Account("alice", 0)
+    bob = Account("bob", 50)
+    accounts = [alice, bob]
+
+    history = [
+        Tx.Open,
+        Tx.Deposit(amount: 100),
+        Tx.Withdraw(amount: 30),
+        Tx.Transfer(to: "bob", amount: 20),
+    ]
+
+    # Replay alice's transaction history, logging each step.
+    print("Replaying {alice.owner}'s history:")
+    for t in history:
+        alice.apply(t)
+        print("  {label(t)} -> balance {alice.balance}")
+
+    # Nullable lookup, narrowed before use.
+    target = find(accounts, "bob")
+    if target is not null:
+        target.balance = target.balance + 20    # the transferred credits land
+        print("Credited transfer to {target.describe()}")
+
+    missing = find(accounts, "carol")
+    found = "yes" if missing is not null else "no"
+    print("Account for carol found? {found}")
+
+    print("Final balances:")
+    for a in accounts:
+        print("  {a.describe()}")

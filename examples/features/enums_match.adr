@@ -1,0 +1,48 @@
+## Enums: niladic, positional, and named-payload variants;
+## qualified construction; leading-dot AND explicit-qualified match arms;
+## an exhaustive match.
+
+enum Shape:
+    Unit                          # niladic — no payload
+    Circle(radius: Float)         # named payload
+    Rect(w: Float, h: Float)      # named payload (two fields)
+    Pair(Float, Float)            # positional payload
+
+fn area(s: Shape) returns Float:
+    # Exhaustive match (all four variants covered).
+    return match s:
+        .Unit:        1.0                 # leading-dot arm
+        .Circle(r):   3.14 * r * r        # leading-dot arm
+        Shape.Rect(w, h): w * h           # explicit-qualified arm
+        Shape.Pair(a, b): a + b           # explicit-qualified arm
+
+fn label(s: Shape) returns String:
+    # A match that uses a catch-all binding arm (bare NAME = binding).
+    return match s:
+        .Unit: "unit"
+        other: "non-unit"                 # bare NAME binds the whole scrutinee
+
+fn main():
+    # Qualified construction: niladic (no parens), named, and positional.
+    u = Shape.Unit
+    c = Shape.Circle(radius: 2.0)
+    r = Shape.Rect(w: 3.0, h: 4.0)
+    p = Shape.Pair(1.5, 2.5)
+
+    print(area(u))                        # 1.0
+    print(area(c))                        # 12.56
+    print(area(r))                        # 12.0
+    print(area(p))                        # 4.0
+
+    print(label(u))                       # unit
+    print(label(c))                       # non-unit
+
+    # Default Show rendering of enum values.
+    print(u)                              # Unit
+    print(c)                              # Circle(radius: 2.0)
+    print(p)                              # Pair(1.5, 2.5)
+
+    # Structural equality over enums (same variant + payload).
+    print(Shape.Circle(radius: 2.0) == Shape.Circle(radius: 2.0))   # true
+    print(Shape.Circle(radius: 2.0) == Shape.Circle(radius: 3.0))   # false
+    print(Shape.Unit == Shape.Unit)                                 # true

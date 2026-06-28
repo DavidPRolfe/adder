@@ -1,0 +1,67 @@
+## Values & operators: Int (incl. big-int), Float, Bool, string interpolation
+## with {{ }} escapes, lists + indexing + nesting, arithmetic incl. ** precedence,
+## comparisons, and/or/not, and structural ==.
+
+fn main():
+    # --- Integers (arbitrary precision) ---
+    print(2 + 3 * 4)               # 14  (precedence)
+    print((2 + 3) * 4)             # 20
+    print(17 % 5)                  # 2
+    print(2 ** 10)                 # 1024
+    print(2 ** 100)                # 1267650600228229401496703205376  (big-int)
+
+    # Int division must divide exactly.
+    print(20 / 4)                  # 5
+
+    # --- ** precedence and associativity ---
+    print(-2 ** 2)                 # -4   (** binds tighter than unary minus)
+    print(2 ** 3 ** 2)             # 512  (right-associative: 2 ** (3 ** 2))
+
+    # --- Floats ---
+    print(1.0 + 2.5)               # 3.5
+    print(10.0 / 4.0)              # 2.5
+    print(3.0 * 2.0)               # 6.0
+
+    # --- Bool and logical operators ---
+    print(true and false)          # false
+    print(true or false)           # true
+    print(not false)               # true
+    print(not (1 < 2))             # false
+
+    # --- Comparisons ---
+    print(3 < 5)                   # true
+    print(5 <= 5)                  # true
+    print(7 > 2)                   # true
+    print(4 >= 9)                  # false
+    print(3 == 3)                  # true
+    print(3 != 4)                  # true
+    print(2 is 2)                  # true   (`is` = value equality)
+    print(2 is not 3)              # true
+
+    # --- Strings: interpolation + {{ }} escapes + escape sequences ---
+    name = "Ada"
+    n = 42
+    print("hello {name}, n = {n}")             # hello Ada, n = 42
+    print("braces: {{literal}} and {n}")       # braces: {literal} and 42
+    print("tab\tend")                          # tab<TAB>end
+    print("quote: \" backslash: \\")           # quote: " backslash: \
+
+    # --- Lists: literal, indexing, nesting ---
+    xs = [10, 20, 30]
+    print(xs[0])                   # 10
+    print(xs[2])                   # 30
+    print(xs)                      # [10, 20, 30]
+
+    grid = [[1, 2], [3, 4]]
+    print(grid[0][1])              # 2
+    print(grid[1][0])              # 3
+    print(grid)                    # [[1, 2], [3, 4]]
+
+    # --- Structural == over lists ---
+    print([1, 2, 3] == [1, 2, 3])  # true
+    print([1, 2, 3] == [1, 2, 4])  # false
+    print([[1], [2]] == [[1], [2]]) # true
+
+    # --- String equality ---
+    print("ab" == "ab")            # true
+    print("ab" != "cd")            # true
