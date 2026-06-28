@@ -20,6 +20,22 @@ fn patterns_example_runs() {
     );
 }
 
+/// Control flow propagates out of a `match` used in statement position: a
+/// `return` inside an arm unwinds the enclosing function (rather than collapsing
+/// into the match's value), and `break`/`continue` inside an arm target the
+/// enclosing loop. Regression test for the match-as-statement flow bug.
+#[test]
+fn match_statement_propagates_control_flow() {
+    let o = run_fixture("examples/features/match_control_flow.adr");
+    assert!(o.status.success(), "example should run; stderr:\n{}", stderr(&o));
+    assert_eq!(
+        stdout(&o).lines().collect::<Vec<_>>(),
+        // describe() returns from each arm; run_until_negative() prints
+        // positives, skips the zero (continue), and stops at -1 (break).
+        vec!["negative", "zero", "positive", "3", "5"],
+    );
+}
+
 /// A guarded arm does NOT count toward exhaustiveness: a guard over the last
 /// uncovered variant, with no `_`, is a compile-time `check error` and nothing
 /// runs.

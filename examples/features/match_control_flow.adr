@@ -1,0 +1,48 @@
+## Control flow through `match` in statement position:
+## an early `return` from an arm unwinds the enclosing function, and
+## `break`/`continue` inside an arm target the enclosing loop. A `match`
+## used as a statement does not swallow these — it behaves like the block
+## it wraps.
+
+enum Sign:
+    Neg
+    Zero
+    Pos
+
+fn sign(n: Int) -> Sign:
+    if n < 0:
+        return Sign.Neg
+    elif n == 0:
+        return Sign.Zero
+    else:
+        return Sign.Pos
+
+## `match` used as a bare statement: each arm `return`s, so control unwinds
+## past the match. The trailing line is only reached if nothing returned.
+fn describe(n: Int) -> String:
+    match sign(n):
+        .Neg:
+            return "negative"
+        .Zero:
+            return "zero"
+        .Pos:
+            return "positive"
+    "unreachable"
+
+## `break`/`continue` inside an arm act on the `for` loop, not the match:
+## print positive numbers, skip zeroes, and stop at the first negative.
+fn run_until_negative(xs: List[Int]):
+    for x in xs:
+        match sign(x):
+            .Neg:
+                break
+            .Zero:
+                continue
+            .Pos:
+                print(x)
+
+fn main():
+    print(describe(-4))                    # negative
+    print(describe(0))                     # zero
+    print(describe(7))                     # positive
+    run_until_negative([3, 0, 5, -1, 9])   # 3, then 5, then stops at -1

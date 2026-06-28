@@ -295,8 +295,17 @@ impl<'a> Interp<'a> {
             StmtKind::Break => Ok(Flow::Break),
             StmtKind::Continue => Ok(Flow::Continue),
             StmtKind::Expr(e) => {
-                let v = self.eval(e, env)?;
-                Ok(Flow::Normal(v))
+                // A `match` in statement position runs its arms as statements:
+                // a `return`/`break`/`continue` inside the chosen arm must unwind
+                // past the match (not collapse into its value), so route it
+                // through the `Flow`-preserving path. Every other expression
+                // evaluates to a value and falls off the end normally.
+                if let ExprKind::Match(m) = &e.kind {
+                    self.exec_match(m, e.span, env)
+                } else {
+                    let v = self.eval(e, env)?;
+                    Ok(Flow::Normal(v))
+                }
             }
             StmtKind::If(s) => self.exec_if(s, env),
             StmtKind::While(s) => self.exec_while(s, env),
@@ -1584,7 +1593,11 @@ impl<'a> Interp<'a> {
     // Match
     // -----------------------------------------------------------------------
 
-    fn eval_match(&mut self, m: &MatchExpr, span: Span, env: &Env) -> EvalResult {
+    /// Run a `match` and return the chosen arm body's [`Flow`] verbatim: a
+    /// `return`/`break`/`continue` inside the arm propagates out unchanged, so a
+    /// `match` in statement position behaves like the block it wraps. The
+    /// expression form ([`eval_match`]) collapses that flow into a value.
+    fn exec_match(&mut self, m: &MatchExpr, span: Span, env: &Env) -> FlowResult {
         let scrutinee = self.eval(&m.scrutinee, env)?;
         for arm in &m.arms {
             let arm_scope = Scope::child(env);
@@ -1599,29 +1612,29 @@ impl<'a> Interp<'a> {
                     continue;
                 }
             }
-            return match self.exec_stmts(&arm.body.stmts, &arm_scope)? {
-                Flow::Normal(v) => Ok(v),
-                Flow::Return(v) => {
-                    // `match` is an expression, and `eval` returns a `Value`
-                    // (it cannot carry a `Flow`). So a `return` inside an arm
-                    // collapses to the arm's value here rather than unwinding
-                    // the enclosing function. Arms normally end in a tail
-                    // expression, where this is indistinguishable from
-                    // `Flow::Normal`; an explicit `return` in arm-as-statement
-                    // position does not propagate past the match (see the
-                    // latent-return note on the surrounding fn).
-                    Ok(v)
-                }
-                Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
-                    "`break`/`continue` not allowed in a match arm".to_string(),
-                    arm.span,
-                )),
-            };
+            return self.exec_stmts(&arm.body.stmts, &arm_scope);
         }
         Err(Diagnostic::runtime(
             "no match arm matched (non-exhaustive match)".to_string(),
             span,
         ))
+    }
+
+    /// Evaluate a `match` used as an expression: run it and collapse the chosen
+    /// arm's flow into a value. A trailing-expression arm yields its value; an
+    /// explicit `return` collapses to the arm value here, since an expression
+    /// cannot unwind the enclosing call — use the statement form (handled in
+    /// [`exec_stmt`] via [`exec_match`]) when a real `return` is intended. A
+    /// `break`/`continue` has no loop to target through an expression and is a
+    /// runtime error.
+    fn eval_match(&mut self, m: &MatchExpr, span: Span, env: &Env) -> EvalResult {
+        match self.exec_match(m, span, env)? {
+            Flow::Normal(v) | Flow::Return(v) => Ok(v),
+            Flow::Break | Flow::Continue => Err(Diagnostic::runtime(
+                "`break`/`continue` not allowed in a match arm".to_string(),
+                span,
+            )),
+        }
     }
 
     /// Try a pattern against a value, binding names into `scope` on success.
