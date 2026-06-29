@@ -380,12 +380,7 @@ impl<'a> Interp<'a> {
             .methods
             .get(&(type_name_str.clone(), name.to_string()))
             .cloned()
-            .ok_or_else(|| {
-                Diagnostic::runtime(
-                    format!("type `{}` has no method `{}`", type_name_str, name),
-                    span,
-                )
-            })?;
+            .ok_or_else(|| no_method(&type_name_str, name, span))?;
 
         // Method scope is a child of the *global* root env (captured via the
         // env chain). Methods resolve other top-level names through the call

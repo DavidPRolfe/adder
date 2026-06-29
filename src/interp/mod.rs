@@ -353,6 +353,13 @@ fn arity_error(fn_name: &str, min: usize, max: usize, got: usize, span: Span) ->
     )
 }
 
+/// The uniform "this receiver type has no such method" runtime error, shared by
+/// user-type method dispatch and the built-in method table so every receiver
+/// type reports a missing method the same way.
+fn no_method(type_label: &str, method: &str, span: Span) -> Diagnostic {
+    Diagnostic::runtime(format!("`{}` has no method `{}`", type_label, method), span)
+}
+
 /// Destructure a [`Value::Tuple`] into `names` (matching arity), binding each
 /// element into `scope`. A non-tuple value or an arity mismatch is a runtime
 /// error. Shared by tuple binders in `val`, `for`, and comprehensions.

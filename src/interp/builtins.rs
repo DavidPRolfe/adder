@@ -100,10 +100,7 @@ impl<'a> Interp<'a> {
             Value::Map(pairs) => self.map_method(pairs, name, arg_vals, span),
             Value::Set(items) => self.set_method(items, name, arg_vals, span),
             Value::Str(s) => Self::str_method(s, name, &arg_vals, span),
-            other => Err(Diagnostic::runtime(
-                format!("type `{}` has no method `{}`", type_name(other), name),
-                span,
-            )),
+            other => Err(no_method(type_name(other), name, span)),
         }
     }
 
@@ -333,10 +330,7 @@ impl<'a> Interp<'a> {
                 arg0(name, &args, span)?;
                 Ok(items.borrow_mut().pop().unwrap_or(Value::Null))
             }
-            _ => Err(Diagnostic::runtime(
-                format!("`List` has no method `{}`", name),
-                span,
-            )),
+            _ => Err(no_method("List", name, span)),
         }
     }
 
@@ -399,10 +393,7 @@ impl<'a> Interp<'a> {
                 arg0(name, &args, span)?;
                 Ok(Value::Int(BigInt::from(pairs.borrow().len())))
             }
-            _ => Err(Diagnostic::runtime(
-                format!("`Map` has no method `{}`", name),
-                span,
-            )),
+            _ => Err(no_method("Map", name, span)),
         }
     }
 
@@ -458,10 +449,7 @@ impl<'a> Interp<'a> {
                 arg0(name, &args, span)?;
                 Ok(Value::Int(BigInt::from(items.borrow().len())))
             }
-            _ => Err(Diagnostic::runtime(
-                format!("`Set` has no method `{}`", name),
-                span,
-            )),
+            _ => Err(no_method("Set", name, span)),
         }
     }
 
@@ -475,10 +463,7 @@ impl<'a> Interp<'a> {
                 // Length in Unicode scalar values (chars), not bytes.
                 Ok(Value::Int(BigInt::from(s.chars().count())))
             }
-            _ => Err(Diagnostic::runtime(
-                format!("`String` has no method `{}`", name),
-                span,
-            )),
+            _ => Err(no_method("String", name, span)),
         }
     }
 
