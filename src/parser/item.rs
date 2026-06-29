@@ -90,7 +90,7 @@ impl<'a> Parser<'a> {
                 Ok(Param::SelfRecv)
             }
             TokenKind::Name(_) => {
-                let (name, _) = p.expect_name("a parameter name")?;
+                let (name, name_span) = p.expect_name("a parameter name")?;
                 p.expect(&TokenKind::Colon, "`:` after the parameter name")?;
                 let ty = p.parse_type()?;
                 // Optional default value: `NAME: type = expr`.
@@ -99,7 +99,11 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-                Ok(Param::Named { name, ty, default })
+                let mut span = name_span.merge(ty.span);
+                if let Some(d) = &default {
+                    span = span.merge(d.span);
+                }
+                Ok(Param::Named { name, ty, default, span })
             }
             other => Err(Diagnostic::parse(
                 format!("expected a parameter, found {}", describe(other)),

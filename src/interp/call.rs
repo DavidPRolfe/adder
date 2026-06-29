@@ -265,7 +265,7 @@ impl<'a> Interp<'a> {
                     }
                     pos_vals.push(self.eval(e, caller_env)?);
                 }
-                Arg::Named { name, value } => {
+                Arg::Named { name, value, .. } => {
                     seen_named = true;
                     if named_vals.contains_key(name) {
                         return Err(Diagnostic::runtime(
@@ -468,7 +468,7 @@ impl<'a> Interp<'a> {
 
         if all_named && !args.is_empty() {
             for a in args {
-                if let Arg::Named { name: fname, value } = a {
+                if let Arg::Named { name: fname, value, .. } = a {
                     if !field_order.contains(fname) {
                         return Err(Diagnostic::runtime(
                             format!("struct `{}` has no field `{}`", name, fname),
@@ -592,7 +592,7 @@ impl<'a> Interp<'a> {
                     // Build by declaration order, looking each up by name.
                     for (fname, _ty) in named_types {
                         let arg = args.iter().find_map(|a| match a {
-                            Arg::Named { name, value } if name == fname => Some(value),
+                            Arg::Named { name, value, .. } if name == fname => Some(value),
                             _ => None,
                         });
                         match arg {
@@ -618,7 +618,7 @@ impl<'a> Interp<'a> {
                                 payload.push(self.eval(e, env)?);
                                 payload_names.push(fname.clone());
                             }
-                            Arg::Named { name, value } => {
+                            Arg::Named { name, value, .. } => {
                                 payload.push(self.eval(value, env)?);
                                 payload_names.push(name.clone());
                             }

@@ -114,7 +114,7 @@ fn fn_one_param(
     stmt(StmtKind::Fn(FnDecl {
         name: fname.to_string(),
         type_params: vec![],
-        params: vec![Param::Named { name: pname.to_string(), ty: pty, default: None }],
+        params: vec![Param::Named { name: pname.to_string(), ty: pty, default: None, span: sp() }],
         returns,
         body: block(body),
         doc: None,

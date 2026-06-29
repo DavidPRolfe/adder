@@ -240,6 +240,8 @@ pub enum Param {
         name: String,
         ty: Type,
         default: Option<Expr>,
+        /// Covers the name through the type, plus the default if present.
+        span: Span,
     },
 }
 
@@ -511,7 +513,9 @@ pub enum Arg {
     /// A positional argument.
     Positional(Expr),
     /// A named argument `name: expr`.
-    Named { name: String, value: Expr },
+    ///
+    /// `span` covers the name through the value.
+    Named { name: String, value: Expr, span: Span },
 }
 
 /// A comprehension (spec §11): sugar over a single `for` loop that builds a

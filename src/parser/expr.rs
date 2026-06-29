@@ -365,10 +365,11 @@ impl<'a> Parser<'a> {
             // Named arg: `NAME ":" expr`. The `:` after a bare NAME disambiguates
             // from a positional NAME expression.
             if matches!(p.peek(), TokenKind::Name(_)) && matches!(p.peek_n(1), TokenKind::Colon) {
-                let (name, _) = p.expect_name("an argument name")?;
+                let (name, name_span) = p.expect_name("an argument name")?;
                 p.advance(); // `:`
                 let value = p.parse_expr()?;
-                Ok(Arg::Named { name, value })
+                let span = name_span.merge(value.span);
+                Ok(Arg::Named { name, value, span })
             } else {
                 let value = p.parse_expr()?;
                 Ok(Arg::Positional(value))

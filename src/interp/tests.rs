@@ -579,6 +579,7 @@
                     span: sp(),
                 },
                 default: None,
+                span: sp(),
             }],
             returns: None,
             body: block(vec![expr_stmt(bin(BinOp::Add, name("n"), name("n")))]),
@@ -787,6 +788,7 @@
                     span: sp(),
                 },
                 default: None,
+                span: sp(),
             }],
             returns: Some(ty_float()),
             body: block(vec![st(StmtKind::Return(Some(match_expr)))]),
@@ -940,6 +942,7 @@
                     span: sp(),
                 },
                 default: None,
+                span: sp(),
             }],
             returns: Some(ty_float()),
             body: block(vec![st(StmtKind::Return(Some(match_expr)))]),
@@ -1476,7 +1479,7 @@
                 name: "contains".to_string(),
                 safe: false,
             })),
-            args: vec![Arg::Named { name: "x".to_string(), value: int(1) }],
+            args: vec![Arg::Named { name: "x".to_string(), value: int(1), span: sp() }],
         });
         let r = interp.eval(&call_expr, &root);
         assert!(r.is_err());
