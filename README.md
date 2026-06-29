@@ -192,7 +192,7 @@ src/         The interpreter; each pipeline stage owns a module:
   token.rs     lexer<->parser contract (tokens, spans, string parts)
   ast.rs       parser<->checks<->interp contract (the syntax tree)
   error.rs     diagnostics shared by every stage
-  lexer.rs     lex:   source -> tokens (+ indentation, string interpolation)
+  lexer/       lex:   source -> tokens (+ indentation, string interpolation)
   parser/      parse: tokens -> AST
   checks/      check: exhaustiveness + null-narrowing
   interp/      run:   the tree-walker + runtime enforcement

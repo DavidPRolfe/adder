@@ -11,7 +11,7 @@ use crate::token::Span;
 /// CLI/tests group or filter errors by stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Tokenization (`lexer.rs`).
+    /// Tokenization (`lexer/`).
     Lex,
     /// Parsing (`parser/`).
     Parse,

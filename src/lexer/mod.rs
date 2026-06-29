@@ -924,5 +924,4 @@ fn keyword_kind(text: &str) -> Option<TokenKind> {
 }
 
 #[cfg(test)]
-#[path = "lexer_tests.rs"]
 mod tests;

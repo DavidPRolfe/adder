@@ -10,14 +10,14 @@ file adds to the earlier grammar). Don't duplicate the spec here — link to it.
 
 ## Pipeline
 
-`lex -> parse -> check -> run`. Each stage owns one module; `lib.rs` has the
-canonical ownership notes. `lexer` is a single file; `parser`, `checks`, and
-`interp` are module directories (each with a `mod.rs`, topic submodules, and a
-`tests.rs`). The stage entry points are unchanged.
+`lex -> parse -> check -> run`. Each stage owns one module directory — a `mod.rs`
+and a `tests.rs`, plus topic submodules where the stage is large enough to
+warrant them (`lexer` is just `mod.rs` + `tests.rs`); `lib.rs` has the canonical
+ownership notes. The stage entry points are unchanged.
 
 | Stage | Entry point | Module | Owns |
 | --- | --- | --- | --- |
-| lex   | `lexer::lex`     | `src/lexer.rs`  | source -> tokens; indentation (`Indent`/`Dedent`/`Newline`), string-interpolation re-lexing |
+| lex   | `lexer::lex`     | `src/lexer/`    | source -> tokens; indentation (`Indent`/`Dedent`/`Newline`), string-interpolation re-lexing |
 | parse | `parser::parse`  | `src/parser/`   | tokens -> `ast::Program`; parses interpolation sub-exprs (`stmt`/`control`/`item`/`expr`/`pattern`/`types`) |
 | check | `checks::check`  | `src/checks/`   | the two static checks (below) and *only* those (`exhaustiveness`/`null_narrowing`) |
 | run   | `interp::run`    | `src/interp/`   | the tree-walker + all runtime enforcement (below) (`value`/`env`/`show`/`builtins`) |
