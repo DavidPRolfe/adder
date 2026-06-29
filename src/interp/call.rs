@@ -22,46 +22,10 @@ impl<'a> Interp<'a> {
         span: Span,
         env: &Env,
     ) -> EvalResult {
+        // A member callee `base.name(args)` — qualified enum construction, the
+        // `?.`/`.or_else` null sugar, or an ordinary method call.
         if let ExprKind::Member { base, name, safe } = &callee.kind {
-            // Qualified enum-variant construction: `Enum.Variant(args)`. Only
-            // when the base names a known enum that isn't shadowed by a value.
-            // `?.` never qualifies an enum (its receiver is a value), so this is
-            // limited to the plain-`.` case.
-            if let ExprKind::Name(enum_name) = &base.kind {
-                if !*safe
-                    && env_get(env, enum_name).is_none()
-                    && self.registry.enums.contains_key(enum_name)
-                {
-                    return self.construct_variant(enum_name, name, args, span, env);
-                }
-            }
-
-            // Otherwise it is a method call `recv.method(args)`.
-            let recv = self.eval(base, env)?;
-
-            // `?.method(...)` safe-call: a `null` receiver short-circuits the
-            // whole call to `null` — the args are never evaluated and the method
-            // never runs (so a chain `a?.b()?.c()` propagates `null`).
-            if *safe && matches!(recv, Value::Null) {
-                return Ok(Value::Null);
-            }
-
-            // Built-in `.or_else(default)` on a possibly-null value.
-            if name == "or_else" {
-                let arg_vals = self.eval_positional_args(args, span, env)?;
-                if arg_vals.len() != 1 {
-                    return Err(Diagnostic::runtime(
-                        "`.or_else` takes exactly one argument".to_string(),
-                        span,
-                    ));
-                }
-                return Ok(match recv {
-                    Value::Null => arg_vals.into_iter().next().unwrap(),
-                    other => other,
-                });
-            }
-
-            return self.call_method(recv, name, args, span, env);
+            return self.eval_member_call(base, name, *safe, args, span, env);
         }
 
         // Construction: a bare name referring to a struct. (Enum variants are
@@ -91,6 +55,60 @@ impl<'a> Interp<'a> {
         // Lambdas / builtins take positional args only (no names/defaults).
         let arg_vals = self.eval_positional_args(args, span, env)?;
         self.apply(callee_v, arg_vals, span)
+    }
+
+    /// A call whose callee is a member expression `base.name(args)`: qualified
+    /// enum-variant construction (`Enum.Variant(...)`), the built-in null sugar
+    /// (`?.` safe-call short-circuit and `.or_else(default)`), or an ordinary
+    /// method call `recv.name(args)`.
+    fn eval_member_call(
+        &mut self,
+        base: &Expr,
+        name: &str,
+        safe: bool,
+        args: &[Arg],
+        span: Span,
+        env: &Env,
+    ) -> EvalResult {
+        // Qualified enum-variant construction: `Enum.Variant(args)`. Only when
+        // the base names a known enum that isn't shadowed by a value. `?.` never
+        // qualifies an enum (its receiver is a value), so this is limited to the
+        // plain-`.` case.
+        if let ExprKind::Name(enum_name) = &base.kind {
+            if !safe
+                && env_get(env, enum_name).is_none()
+                && self.registry.enums.contains_key(enum_name)
+            {
+                return self.construct_variant(enum_name, name, args, span, env);
+            }
+        }
+
+        // Otherwise it is a method call `recv.method(args)`.
+        let recv = self.eval(base, env)?;
+
+        // `?.method(...)` safe-call: a `null` receiver short-circuits the whole
+        // call to `null` — the args are never evaluated and the method never
+        // runs (so a chain `a?.b()?.c()` propagates `null`).
+        if safe && matches!(recv, Value::Null) {
+            return Ok(Value::Null);
+        }
+
+        // Built-in `.or_else(default)` on a possibly-null value.
+        if name == "or_else" {
+            let arg_vals = self.eval_positional_args(args, span, env)?;
+            if arg_vals.len() != 1 {
+                return Err(Diagnostic::runtime(
+                    "`.or_else` takes exactly one argument".to_string(),
+                    span,
+                ));
+            }
+            return Ok(match recv {
+                Value::Null => arg_vals.into_iter().next().unwrap(),
+                other => other,
+            });
+        }
+
+        self.call_method(recv, name, args, span, env)
     }
 
     /// Evaluate args, requiring all positional (for function calls).
@@ -156,11 +174,11 @@ impl<'a> Interp<'a> {
                     env_define(&call_scope, p, v, false);
                 }
                 // A lambda body is a single expression. A `try` inside it
-                // unwinds to here, the lambda's own boundary.
-                let r = self.eval(&l.body, &call_scope);
-                match r {
-                    Err(_) if self.propagating.is_some() => Ok(self.propagating.take().unwrap()),
-                    other => other,
+                // unwinds to here, the lambda's own boundary — via the same
+                // single interception `finish_body` uses.
+                match self.eval(&l.body, &call_scope) {
+                    Err(d) => self.intercept_propagation(d),
+                    ok => ok,
                 }
             }
         }
@@ -414,10 +432,21 @@ impl<'a> Interp<'a> {
     fn finish_body(&mut self, body: FlowResult, message: &str, span: Span) -> EvalResult {
         match body {
             Ok(flow) => finish_call(flow, message, span),
-            Err(d) => match self.propagating.take() {
-                Some(v) => Ok(v),
-                None => Err(d),
-            },
+            Err(d) => self.intercept_propagation(d),
+        }
+    }
+
+    /// The single place a `try` unwind is turned back into a value at a call
+    /// boundary: if a `try` stashed an `Err` in `self.propagating`, consume it
+    /// as this call's value; otherwise `d` is a genuine runtime error. Every
+    /// call boundary — function/method bodies via [`Self::finish_body`] and the
+    /// lambda path in [`Self::call_closure`] — routes its `Err` through here, so
+    /// the "intercept the propagation sentinel" invariant lives in exactly one
+    /// spot.
+    fn intercept_propagation(&mut self, d: Diagnostic) -> EvalResult {
+        match self.propagating.take() {
+            Some(v) => Ok(v),
+            None => Err(d),
         }
     }
 
