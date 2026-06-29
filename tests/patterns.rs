@@ -1,6 +1,6 @@
-//! M2 Wave 2-A acceptance tests — pattern & match enhancements (match guards,
-//! or-patterns, nested / tuple destructuring), enforced end-to-end through the
-//! real CLI binary (`lex → parse → check → run`) over `.adr` fixtures.
+//! Pattern & match-enhancement acceptance tests — match guards, or-patterns,
+//! nested / tuple destructuring — enforced end-to-end through the real CLI
+//! binary (`lex → parse → check → run`) over `.adr` fixtures.
 //!
 //! Mirrors `tests/acceptance.rs`: each test spawns the compiled `adder` binary
 //! on a fixture and asserts on stdout / stderr / exit status.

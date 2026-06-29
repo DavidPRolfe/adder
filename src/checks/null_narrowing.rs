@@ -124,7 +124,7 @@ impl<'a> NullNarrowing<'a> {
     }
 
     /// `if x is not null:` narrows `x` to non-null inside the then-branch.
-    /// We handle the positive then-branch narrowing only (per M1 scope).
+    /// We only narrow the positive then-branch; negative narrowing is not done.
     fn check_if(&mut self, if_stmt: &IfStmt, scope: &mut HashMap<String, NullState>) {
         for (cond, body) in &if_stmt.arms {
             // Each arm's condition is evaluated in the *outer* scope.
@@ -137,7 +137,7 @@ impl<'a> NullNarrowing<'a> {
             self.check_stmts(&body.stmts, &mut inner);
 
             // For an `elif`, earlier conditions were false on this path, but we
-            // don't do negative narrowing in M1 — just keep the outer scope.
+            // don't do negative narrowing — just keep the outer scope.
         }
         if let Some(else_body) = &if_stmt.else_body {
             let mut inner = scope.clone();

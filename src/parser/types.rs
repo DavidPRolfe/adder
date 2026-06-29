@@ -7,11 +7,11 @@ impl<'a> Parser<'a> {
 
     /// `type = base_type [ "?" ]`.
     ///
-    /// A parenthesized type is one of (M2): the unit type `()`; a grouped type
+    /// A parenthesized type is one of: the unit type `()`; a grouped type
     /// `(T)`; a tuple type `(A, B, …)` (≥2 components); or — when a `->` follows
     /// the closing `)` — a **function type** `(T1, …) -> R` (zero params is
     /// `() -> R`). Function/tuple types are parsed for documentation and
-    /// higher-order signatures; they are not statically checked in M2.
+    /// higher-order signatures; they are not statically checked.
     pub(crate) fn parse_type(&mut self) -> PResult<Type> {
         let start = self.cur_span();
         let base = match self.peek().clone() {

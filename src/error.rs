@@ -13,11 +13,11 @@ use crate::token::Span;
 pub enum Phase {
     /// Tokenization (`lexer.rs`).
     Lex,
-    /// Parsing (`parser.rs`).
+    /// Parsing (`parser/`).
     Parse,
-    /// Static checks — exhaustiveness + null-narrowing (`checks.rs`).
+    /// Static checks — exhaustiveness + null-narrowing (`checks/`).
     Check,
-    /// Runtime evaluation (`interp.rs`).
+    /// Runtime evaluation (`interp/`).
     Runtime,
 }
 

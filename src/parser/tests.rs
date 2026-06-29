@@ -1227,8 +1227,8 @@
     }
 
     // =====================================================================
-    // M2 Wave 1-B — collections, comprehensions, tuple binders, function/
-    // tuple types, default + named args. These go through the real lexer.
+    // Collections, comprehensions, tuple binders, function/tuple types,
+    // default + named args. These go through the real lexer.
     // =====================================================================
 
     /// Lex + parse real source, returning the parse diagnostics (asserting it
@@ -1458,7 +1458,7 @@
     }
 
     // =====================================================================
-    // M2 Wave 2-A — match guards, or-patterns, tuple / nested patterns.
+    // Match guards, or-patterns, tuple / nested patterns.
     // =====================================================================
 
     /// Pull the arms of a `match` out of a one-binding program

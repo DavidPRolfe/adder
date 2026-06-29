@@ -1,5 +1,5 @@
-//! M2 Wave 1-A acceptance tests — eager iterator pipelines via built-in method
-//! dispatch, exercised end-to-end through the real CLI binary
+//! Eager iterator-pipeline acceptance tests — built-in method dispatch
+//! (`filter`/`map`/`fold`/…), exercised end-to-end through the real CLI binary
 //! (`lex → parse → check → run`) over a `.adr` fixture.
 //!
 //! Self-contained: the tiny `run_fixture`/`stdout` helpers below mirror

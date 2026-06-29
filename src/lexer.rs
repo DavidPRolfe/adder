@@ -812,7 +812,7 @@ impl<'a> Lexer<'a> {
             },
             ':' => emit!(1, TokenKind::Colon),
             ',' => emit!(1, TokenKind::Comma),
-            // `?.` is the safe-call operator (M2); a lone `?` is the nullable
+            // `?.` is the safe-call operator; a lone `?` is the nullable
             // type suffix. Maximal munch: only fold `.` in when it immediately
             // follows the `?`.
             '?' => match c1 {
@@ -885,13 +885,13 @@ fn is_id_continue(c: char) -> bool {
 
 /// Map a reserved keyword to its `TokenKind`, or `None` for a plain `Name`.
 ///
-/// `trait` and `try` are activated as keywords in M3 (spec §7, §9). The
+/// `trait` and `try` are keywords (spec §7, §9). The
 /// remaining reserved-but-unused words (`import from as to`) and the contextual
 /// keywords `Self`/`derive` still lex as plain `Name` — `Self` is recognized in
 /// type position and `derive` at the head of a struct/enum declaration by the
-/// parser (grammar §1, M3 grammar §1.1). `print` and `panic` are intentionally
-/// not keywords. `returns` was dropped as a keyword in M2 (function results now
-/// use `->`), so it too lexes as a plain `Name`.
+/// parser (grammar §1). `print` and `panic` are intentionally
+/// not keywords. `returns` is not a keyword (function results use `->`), so it
+/// too lexes as a plain `Name`.
 fn keyword_kind(text: &str) -> Option<TokenKind> {
     Some(match text {
         "fn" => TokenKind::Fn,

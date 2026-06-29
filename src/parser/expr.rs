@@ -262,7 +262,7 @@ impl<'a> Parser<'a> {
     ///
     /// `**` binds tighter than unary minus, so `-2 ** 2` = `-(2 ** 2)`: unary
     /// minus wraps the *power* result, and `parse_power` is what consumes the
-    /// `**`. `try` (M3; spec §9) sits at the same prefix level, so it binds
+    /// `**`. `try` (spec §9) sits at the same prefix level, so it binds
     /// tighter than arithmetic — `try f(a) + try f(b)` is `(try f(a)) + (try
     /// f(b))` and `try f(a) / d` is `(try f(a)) / d`.
     pub(crate) fn parse_unary(&mut self) -> PResult<Expr> {
@@ -340,7 +340,7 @@ impl<'a> Parser<'a> {
                         span,
                     };
                 }
-                // `?.` (safe access, M2 Wave 2): same shape as `.`, but `safe:
+                // `?.` (safe access): same shape as `.`, but `safe:
                 // true`. A safe method call `x?.m(args)` is a `Call` whose callee
                 // is this safe `Member` — the `LParen` arm above picks it up on
                 // the next loop turn, exactly as for a plain `.m()`.
@@ -380,7 +380,7 @@ impl<'a> Parser<'a> {
     ///          | list_literal | brace_literal | tuple_or_group | match_expr`.
     ///
     /// `brace_literal` is a `Map`/`Set` literal or a set/map comprehension;
-    /// `tuple_or_group` is `( expr )` grouping or `( a, b, … )` tuple (M2).
+    /// `tuple_or_group` is `( expr )` grouping or `( a, b, … )` tuple.
     pub(crate) fn parse_primary(&mut self) -> PResult<Expr> {
         let span = self.cur_span();
         match self.peek().clone() {
@@ -429,7 +429,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `list_literal = "[" [ expr , … ] "]"`, or a **list comprehension**
-    /// `"[" expr "for" binder "in" iter [ "if" cond ] "]"` (M2). A top-level
+    /// `"[" expr "for" binder "in" iter [ "if" cond ] "]"`. A top-level
     /// `for` inside the brackets selects the comprehension form.
     pub(crate) fn parse_list_literal_or_comprehension(&mut self) -> PResult<Expr> {
         let start = self.cur_span();
@@ -443,7 +443,7 @@ impl<'a> Parser<'a> {
         Ok(Expr { kind: ExprKind::List(items), span: start.merge(close.span) })
     }
 
-    /// A brace-delimited literal (M2): a `Map` `{ k: v, … }`, a `Set`
+    /// A brace-delimited literal: a `Map` `{ k: v, … }`, a `Set`
     /// `{ x, … }`, the empty `Map` `{}`, or a set/map comprehension. The current
     /// token is the opening `{`.
     ///
@@ -614,7 +614,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `( expr )` grouping or `( a, b, … )` tuple (M2). The current token is `(`.
+    /// `( expr )` grouping or `( a, b, … )` tuple. The current token is `(`.
     /// A single parenthesized expression stays pure grouping; a tuple needs at
     /// least one comma (two or more elements).
     pub(crate) fn parse_tuple_or_group(&mut self) -> PResult<Expr> {

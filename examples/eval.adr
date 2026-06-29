@@ -1,4 +1,4 @@
-## A tiny expression evaluator (MVP subset).
+## A tiny expression evaluator.
 
 enum Expr:
     Num(Float)

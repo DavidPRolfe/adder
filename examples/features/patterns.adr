@@ -1,4 +1,4 @@
-## Pattern & match enhancements (M2 Wave 2-A):
+## Pattern & match enhancements:
 ## a match guard, an or-pattern, and a nested destructure.
 
 enum Tree:

@@ -1,5 +1,5 @@
-//! M2 Wave 1 — map/set literals, the two empty forms (`{}` map vs `Set()`),
-//! dedup, and nullable map lookup. End-to-end through the real CLI binary.
+//! Map/set literals, the two empty forms (`{}` map vs `Set()`), dedup, and
+//! nullable map lookup. End-to-end through the real CLI binary.
 
 mod common;
 use common::{run_fixture, stdout};

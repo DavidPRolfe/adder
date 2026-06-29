@@ -1,8 +1,8 @@
-//! M2 Wave 2-B acceptance tests — **null sugar**: the `?.` safe-call and the
-//! `.expect(msg)` assertion, enforced end-to-end through the real CLI binary
+//! Null-sugar acceptance tests — the `?.` safe-call and the `.expect(msg)`
+//! assertion, enforced end-to-end through the real CLI binary
 //! (`lex → parse → check → run`) over `.adr` fixture programs.
 //!
-//! These cover the spec §8 behaviors and the M2 definition-of-done bullet:
+//! These cover the spec §8 behaviors:
 //! `x?.field` yields `null` on a null receiver (and chains short-circuit);
 //! `x.expect("msg")` panics with `msg`; both satisfy the null-narrowing check —
 //! and a `.expect` panic is a *runtime* error, distinct from the compile-time
@@ -44,7 +44,7 @@ fn expect_on_null_is_a_runtime_error() {
 
 // ===========================================================================
 // Contrast: a plain un-narrowed `T?` use is still a COMPILE-TIME check error
-// (the sugar above did not weaken the M1 null-narrowing check). It must be
+// (the sugar above did not weaken the null-narrowing check). It must be
 // rejected before anything runs.
 // ===========================================================================
 

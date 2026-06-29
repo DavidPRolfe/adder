@@ -1,6 +1,6 @@
 //! Built-in (prelude) functions and the built-in **method table** for non-user
-//! receiver types — `List`, `Str`, `Map`, `Set`, `Tuple`, and range-lists
-//! (M2 Wave 1-A). Houses the eager iterator pipeline (`map`/`filter`/`fold`/…),
+//! receiver types — `List`, `Str`, `Map`, `Set`, `Tuple`, and range-lists.
+//! Houses the eager iterator pipeline (`map`/`filter`/`fold`/…),
 //! the `Map`/`Set` methods, and their argument/coercion/numeric helpers.
 
 use std::cell::RefCell;
@@ -40,7 +40,7 @@ impl<'a> Interp<'a> {
                 }
                 Ok(Value::Set(Rc::new(RefCell::new(Vec::new()))))
             }
-            // M3: the prelude `Result` constructors (spec §9). Each takes exactly
+            // The prelude `Result` constructors (spec §9). Each takes exactly
             // one positional payload and builds the corresponding variant.
             Builtin::Ok => self.construct_result_variant("Ok", args, span),
             Builtin::Err => self.construct_result_variant("Err", args, span),
@@ -48,7 +48,7 @@ impl<'a> Interp<'a> {
     }
 
     /// Build a `Result.Ok(v)` / `Result.Err(v)` instance from a single argument
-    /// (M3; spec §9). A wrong argument count is a runtime error.
+    /// (spec §9). A wrong argument count is a runtime error.
     fn construct_result_variant(
         &self,
         variant: &str,
@@ -70,7 +70,7 @@ impl<'a> Interp<'a> {
     }
 
     /// The **built-in method table** for non-user receiver types — `List`,
-    /// `Str`, `Map`, `Set`, `Tuple`, and range-lists (M2 Wave 1-A). This is the
+    /// `Str`, `Map`, `Set`, `Tuple`, and range-lists. This is the
     /// home for the eager iterator pipeline (`map`/`filter`/`fold`/…) and the
     /// `Map`/`Set` methods (`get`/`insert`/`keys`/…).
     ///
@@ -308,7 +308,7 @@ impl<'a> Interp<'a> {
                 sort_values(&mut out, &self.registry, span)?;
                 Ok(list_value(out))
             }
-            // In-place sort (M3; spec §7.1) — mutates the receiver, returns unit.
+            // In-place sort (spec §7.1) — mutates the receiver, returns unit.
             "sort" => {
                 arg0(name, &args, span)?;
                 let mut out = items.borrow().clone();
@@ -467,7 +467,7 @@ impl<'a> Interp<'a> {
 
     // ---- String methods (minimal) -----------------------------------------
 
-    /// Dispatch a built-in `String` method. Minimal in M2 Wave 1: `len()`.
+    /// Dispatch a built-in `String` method. Currently just `len()`.
     pub(crate) fn str_method(s: &str, name: &str, args: &[Value], span: Span) -> EvalResult {
         match name {
             "len" => {
@@ -519,7 +519,7 @@ pub(crate) fn set_insert(elems: &mut Vec<Value>, value: Value) {
     }
 }
 
-// ---- Built-in-method argument arity (M2 Wave 1-A) ------------------------
+// ---- Built-in-method argument arity ------------------------
 
 /// Require a built-in method to receive **no** arguments.
 pub(crate) fn arg0(name: &str, args: &[Value], span: Span) -> Result<(), Diagnostic> {

@@ -1,4 +1,4 @@
-//! Milestone-1 acceptance tests — the **definition of done** from
+//! Acceptance tests — the **definition of done** from
 //! `spec/02-mvp-scope.md`, enforced end-to-end through the real CLI binary
 //! (`lex → parse → check → run`) over `.adr` fixture programs.
 //!

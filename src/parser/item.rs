@@ -1,6 +1,6 @@
 use super::*;
 
-/// One member of a `trait` body: a required signature or a default method (M3).
+/// One member of a `trait` body: a required signature or a default method.
 enum TraitItem {
     Required(TraitSig),
     Default(FnDecl),
@@ -9,10 +9,9 @@ enum TraitItem {
 impl<'a> Parser<'a> {
     /// `fn NAME [type_params] "(" [param_list] ")" [ "->" type ] ":" suite`.
     ///
-    /// The result clause is `-> type` (M2; the M1 `returns` keyword was
-    /// dropped). A function with no `->` returns unit, exactly as before. An
-    /// optional `[T: Bound, …]` after the name declares type parameters (M3;
-    /// parsed, not checked).
+    /// The result clause is `-> type`. A function with no `->` returns unit. An
+    /// optional `[T: Bound, …]` after the name declares type parameters (parsed,
+    /// not checked).
     pub(crate) fn parse_fn_decl(&mut self) -> PResult<FnDecl> {
         let start = self.cur_span();
         let doc = self.cur_doc();
@@ -37,7 +36,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `"[" type_param , … "]"` where `type_param = NAME [ ":" bound ]` and
-    /// `bound = NAME { "and" NAME }` (M3; spec §10). **Parsed, not checked** —
+    /// `bound = NAME { "and" NAME }` (spec §10). **Parsed, not checked** —
     /// the bounds document intent and the parameters are erased at runtime.
     pub(crate) fn parse_type_params(&mut self) -> PResult<Vec<TypeParam>> {
         self.expect(&TokenKind::LBracket, "`[` to open type parameters")?;
@@ -72,7 +71,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Consume and discard a `[T, …]` generic-argument list on a type path in an
-    /// `impl` header (M3) — the arguments are erased at runtime.
+    /// `impl` header — the arguments are erased at runtime.
     fn eat_opt_type_args(&mut self) -> PResult<()> {
         if matches!(self.peek(), TokenKind::LBracket) {
             self.advance();
@@ -83,7 +82,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `param_list = param , …` ; `param = "self" | NAME ":" type [ "=" expr ]`.
-    /// A trailing `= expr` is a **default value** (M2 Wave 1).
+    /// A trailing `= expr` is a **default value**.
     pub(crate) fn parse_params(&mut self) -> PResult<Vec<Param>> {
         self.parse_separated(&TokenKind::RParen, |p| match p.peek() {
             TokenKind::SelfKw => {
@@ -94,7 +93,7 @@ impl<'a> Parser<'a> {
                 let (name, _) = p.expect_name("a parameter name")?;
                 p.expect(&TokenKind::Colon, "`:` after the parameter name")?;
                 let ty = p.parse_type()?;
-                // Optional default value: `NAME: type = expr` (M2 Wave 1).
+                // Optional default value: `NAME: type = expr`.
                 let default = if p.eat(&TokenKind::Eq) {
                     Some(p.parse_expr()?)
                 } else {
@@ -112,7 +111,7 @@ impl<'a> Parser<'a> {
     /// `[derive_clause] "struct" NAME [type_params] ":" NEWLINE INDENT field_decl+ DEDENT`.
     /// Methods are **not** allowed in a struct body — they are defined in an
     /// `impl` block (§4.6), so there is exactly one way to add a method. The
-    /// `derives` come from a preceding `derive` line (M3; passed by the caller).
+    /// `derives` come from a preceding `derive` line (passed by the caller).
     pub(crate) fn parse_struct(&mut self, derives: Vec<String>) -> PResult<Stmt> {
         let start = self.cur_span();
         let doc = self.cur_doc();
@@ -198,7 +197,7 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `"derive" NAME , … NEWLINE` followed by a `struct`/`enum` (M3; spec §7.1).
+    /// `"derive" NAME , … NEWLINE` followed by a `struct`/`enum` (spec §7.1).
     /// `derive` is a contextual keyword recognized at declaration head when it is
     /// followed by a trait name; this attaches the requested derives to the
     /// declaration that follows.
@@ -253,7 +252,7 @@ impl<'a> Parser<'a> {
 
     /// `impl [type_params] type_path [ "for" type_path ] ":" NEWLINE INDENT fn_decl+ DEDENT`.
     ///
-    /// Two forms (M3): an inherent `impl Type:` block (`trait_name = None`), or a
+    /// Two forms: an inherent `impl Type:` block (`trait_name = None`), or a
     /// trait impl `impl Trait for Type:` — the `for` is the pivot, so the first
     /// path is the trait and the second the implementing type. Generic arguments
     /// on either path (`impl Stack[T]:`) are parsed and erased.
@@ -298,8 +297,8 @@ impl<'a> Parser<'a> {
         })
     }
 
-    /// `trait NAME [type_params] ":" NEWLINE INDENT trait_item+ DEDENT` (M3;
-    /// spec §7). A trait item is either a **required** signature (`fn … NEWLINE`,
+    /// `trait NAME [type_params] ":" NEWLINE INDENT trait_item+ DEDENT` (spec
+    /// §7). A trait item is either a **required** signature (`fn … NEWLINE`,
     /// no body) or a **default** method (`fn … ":" suite`).
     pub(crate) fn parse_trait(&mut self) -> PResult<Stmt> {
         let start = self.cur_span();

@@ -223,7 +223,7 @@ impl<'a> Exhaustiveness<'a> {
 
         for arm in &m.arms {
             // A *guarded* arm (`pattern if cond:`) may not fire, so it does not
-            // contribute to exhaustiveness — skip its coverage entirely (M2). So
+            // contribute to exhaustiveness — skip its coverage entirely. So
             // a guard over the last uncovered variant still leaves the match
             // non-exhaustive; adding `_` (or an unguarded arm) fixes it.
             if arm.guard.is_some() {
@@ -267,7 +267,7 @@ impl<'a> Exhaustiveness<'a> {
     /// Record the enum-variant coverage of one (sub-)pattern against `variants`,
     /// emitting any best-effort arity / unknown-variant / wrong-enum diagnostics.
     ///
-    /// Coverage stays **enum-variant-based** (as in M1): a variant pattern covers
+    /// Coverage stays **enum-variant-based**: a variant pattern covers
     /// its variant regardless of how its sub-patterns are shaped — no deep or
     /// cross-product reasoning. `_` and a bare binding cover everything
     /// (`has_catch_all`). An **or-pattern** contributes the coverage of *all* its
@@ -300,7 +300,7 @@ impl<'a> Exhaustiveness<'a> {
                     }
                 }
                 // Arity / unknown-variant diagnostics (cheap, best-effort). The
-                // sub-patterns may themselves be nested patterns (M2); they do
+                // sub-patterns may themselves be nested patterns; they do
                 // not affect exhaustiveness, so we do not recurse into them here.
                 if let Some((_, arity)) = variants.iter().find(|(vn, _)| vn == name) {
                     if *arity != subs.len() {

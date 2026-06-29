@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use super::*;
 
 /// Structural ordering over comparable scalars (`Int`, `Float`, `String`,
-/// `Bool`) and, for M3, user struct/enum types that opted in with `derive Ord`
+/// `Bool`) and user struct/enum types that opted in with `derive Ord`
 /// (spec §7.1). Comparison is only defined within a single type; comparing
 /// across types — or comparing a non-scalar that did **not** derive `Ord` — is a
 /// runtime error (used by `sorted`/`sort`/`min`/`max` and the comparison
@@ -33,7 +33,7 @@ pub(crate) fn compare_values(
         }),
         (Value::Str(x), Value::Str(y)) => Ok(x.cmp(y)),
         (Value::Bool(x), Value::Bool(y)) => Ok(x.cmp(y)),
-        // M3: `derive Ord` struct/enum types — lexicographic by declaration order.
+        // `derive Ord` struct/enum types — lexicographic by declaration order.
         (Value::Struct(x), Value::Struct(y)) => {
             let (x, y) = (x.borrow(), y.borrow());
             if x.type_name != y.type_name {

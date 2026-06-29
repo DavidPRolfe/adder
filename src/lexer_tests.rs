@@ -28,7 +28,7 @@
 
     #[test]
     fn returns_is_now_a_plain_name() {
-        // `returns` was dropped as a keyword in M2 — it lexes as an identifier.
+        // `returns` is not a keyword — it lexes as an identifier.
         use TokenKind::*;
         assert_eq!(kinds("returns\n"), vec![Name("returns".into()), Newline, Eof]);
     }
@@ -49,8 +49,8 @@
     #[test]
     fn print_and_panic_are_names() {
         // `print`/`panic` are prelude bindings, not keywords. `Self`/`import`/
-        // `from`/`as`/`to` are still reserved-but-unused → plain names. M3
-        // activated `trait` and `try` as keywords (spec §7, §9).
+        // `from`/`as`/`to` are still reserved-but-unused → plain names; `trait`
+        // and `try` are keywords (spec §7, §9).
         let ks = kinds("print panic Self import from as to trait try\n");
         use TokenKind::*;
         assert_eq!(
@@ -556,8 +556,8 @@
     }
 
     #[test]
-    fn full_mvp_showcase_lexes() {
-        let src = r#"## A tiny expression evaluator (MVP subset).
+    fn full_showcase_lexes() {
+        let src = r#"## A tiny expression evaluator.
 
 enum Expr:
     Num(Float)

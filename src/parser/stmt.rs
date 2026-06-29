@@ -129,7 +129,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `val ( NAME | "(" NAME, … ")" ) [":" type] "=" expr` (the tuple-binder
-    /// form `val (a, b) = pair` is M2; a tuple binder may not carry a type
+    /// form is `val (a, b) = pair`; a tuple binder may not carry a type
     /// annotation).
     pub(crate) fn parse_val_binding(&mut self) -> PResult<Stmt> {
         let kw = self.cur_span();

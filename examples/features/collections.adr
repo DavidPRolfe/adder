@@ -1,14 +1,14 @@
-## Collections & comprehensions (M2 Wave 1): Map / Set / tuple literals,
+## Collections & comprehensions: Map / Set / tuple literals,
 ## a list comprehension with a filter, a function-typed parameter taking a
 ## lambda, default + named arguments, and `for (k, v)` tuple destructuring.
 ##
-## Note: the iterator method table (`map`/`filter`/`.items()`/…) lands with
-## Wave 1-A. Here we show the *surface* those build on — literals,
+## Note: the iterator method table (`map`/`filter`/`.items()`/…) is covered
+## elsewhere. Here we show the *surface* those build on — literals,
 ## comprehensions, tuples, destructuring, and passable lambdas — iterating the
 ## (name, cost) pairs as a literal list of tuples rather than `prices.items()`.
 
 ## A function-typed parameter: `f` maps an Int to an Int. A lambda or a named
-## `fn` may be passed and called (typed-lite: not statically checked).
+## `fn` may be passed and called (not statically checked).
 fn apply_to_each(xs: List[Int], f: (Int) -> Int) -> List[Int]:
     return [f(x) for x in xs]
 

@@ -84,7 +84,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `for ( NAME | "(" NAME, … ")" ) in expr ":" suite` (the tuple-binder form
-    /// `for (k, v) in m.items()` is M2).
+    /// is `for (k, v) in m.items()`).
     pub(crate) fn parse_for(&mut self) -> PResult<Stmt> {
         let start = self.cur_span();
         self.advance(); // `for`
@@ -136,7 +136,7 @@ impl<'a> Parser<'a> {
     /// as a [`Block`]. An inline expr arm is wrapped as a one-statement block.
     ///
     /// A match guard (`pattern if cond:`) makes the arm conditional: it only
-    /// fires when `cond` is `Bool` and true (M2 Wave 2). A guarded arm does not
+    /// fires when `cond` is `Bool` and true. A guarded arm does not
     /// count toward exhaustiveness ([`crate::checks`]).
     pub(crate) fn parse_match_arm(&mut self) -> PResult<MatchArm> {
         let start = self.cur_span();

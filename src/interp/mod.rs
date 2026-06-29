@@ -2,7 +2,7 @@
 //!
 //! Owned by the *interpreter agent*. Walks the [`Program`] and executes it.
 //!
-//! ## Ownership (per spec / `02-mvp-scope.md`)
+//! ## Ownership (see `lib.rs` for the canonical notes)
 //!
 //! This stage **owns** the following runtime concerns. They are deliberately
 //! *not* in [`crate::checks`]:
@@ -122,7 +122,7 @@ fn finish_call(flow: Flow, message: &str, span: Span) -> EvalResult {
     }
 }
 
-/// The sentinel error a `try` (M3; spec §9) raises to unwind to the nearest call
+/// The sentinel error a `try` (spec §9) raises to unwind to the nearest call
 /// boundary along the `?` chain. It is always intercepted by
 /// [`Interp::finish_body`] (which checks `propagating`); its message only
 /// surfaces if a `try` escapes every enclosing function — e.g. at top level —
@@ -144,16 +144,16 @@ pub(crate) struct Registry {
     structs: HashMap<String, Rc<StructDecl>>,
     enums: HashMap<String, Rc<EnumDecl>>,
     /// `Type::method` → the method's `FnDecl`. Trait-impl methods and inherited
-    /// trait default methods (M3) are folded into this same table at collect
+    /// trait default methods are folded into this same table at collect
     /// time, so method dispatch is uniform — see [`Interp::collect_decls`].
     methods: HashMap<(String, String), Rc<FnDecl>>,
-    /// `Trait name` → its declaration (M3), used to inherit default methods into
+    /// `Trait name` → its declaration, used to inherit default methods into
     /// the `methods` table for each `impl Trait for Type`.
     traits: HashMap<String, Rc<TraitDecl>>,
     /// `Variant name` → `Enum name`, so a bare `Add(...)` resolves its enum.
     variant_to_enum: HashMap<String, String>,
     /// Names of struct/enum types that opted into ordering with `derive Ord`
-    /// (M3; spec §7.1). Comparison (`<`/`<=`/`>`/`>=`) and `.sort()` of a user
+    /// (spec §7.1). Comparison (`<`/`<=`/`>`/`>=`) and `.sort()` of a user
     /// type are allowed only when its name is in this set.
     ord_types: HashSet<String>,
 }
@@ -168,7 +168,7 @@ struct Interp<'a> {
     registry: Registry,
     /// Where program output goes (`print`). Borrowed for the run's duration.
     out: &'a mut dyn Write,
-    /// M3 `try` propagation (spec §9). When `try` hits an `Err`, it stashes the
+    /// `try` propagation (spec §9). When `try` hits an `Err`, it stashes the
     /// whole `Err(..)` value here and unwinds via a sentinel error along the
     /// existing `?` chain; the nearest function/method/lambda boundary takes it
     /// and makes it that call's return value. `Some` only transiently, during an
@@ -234,7 +234,7 @@ fn seed_prelude(root: &Env) {
     env_define(root, "print", Value::Builtin(Builtin::Print), false);
     env_define(root, "panic", Value::Builtin(Builtin::Panic), false);
     env_define(root, "Set", Value::Builtin(Builtin::Set), false);
-    // M3: the prelude `Result` constructors (spec §9). The matching `Result`
+    // The prelude `Result` constructors (spec §9). The matching `Result`
     // enum metadata is seeded into the registry by `collect_decls`.
     env_define(root, "Ok", Value::Builtin(Builtin::Ok), false);
     env_define(root, "Err", Value::Builtin(Builtin::Err), false);
@@ -244,11 +244,11 @@ impl<'a> Interp<'a> {
     /// Collect all top-level declarations into the registry.
     ///
     /// Two passes so declaration order never matters: pass 1 registers types and
-    /// traits; pass 2 registers `impl` blocks (M3: inherent **and** trait impls).
+    /// traits; pass 2 registers `impl` blocks (inherent **and** trait impls).
     /// For a trait impl, the trait's default methods that the impl does not
     /// override are folded into the method table under the implementing type, so
     /// `call_method` dispatch stays uniform and trait dispatch needs no special
-    /// path (typed-lite — see `spec/06-m3-scope.md`).
+    /// path.
     fn collect_decls(&mut self, program: &Program) {
         // Pass 1: types and traits.
         for stmt in &program.stmts {
@@ -277,7 +277,7 @@ impl<'a> Interp<'a> {
                 _ => {}
             }
         }
-        // M3: seed the prelude `Result` enum's metadata (spec §9) so qualified
+        // Seed the prelude `Result` enum's metadata (spec §9) so qualified
         // construction, matching, and `variant → enum` resolution work. The bare
         // `Ok`/`Err` constructors are seeded separately in `seed_prelude`.
         let result = crate::ast::result_enum_decl();
@@ -298,7 +298,7 @@ impl<'a> Interp<'a> {
                         .insert((i.type_name.clone(), m.name.clone()), Rc::new(m.clone()));
                 }
                 // Trait impl: inherit each default method this impl did not
-                // override. An unknown trait name is tolerated (typed-lite); the
+                // override. An unknown trait name is tolerated; the
                 // impl's own methods still register, default inheritance is just
                 // skipped.
                 if let Some(trait_name) = &i.trait_name {
@@ -472,7 +472,7 @@ impl<'a> Interp<'a> {
         Ok(Flow::Normal(Value::Unit))
     }
 
-    /// Materialize a `for`-iterable into a vector of element values. M1 supports
+    /// Materialize a `for`-iterable into a vector of element values. Supports
     /// ranges (already evaluated to lists) and lists.
     fn iterable_items(&self, v: &Value, span: Span) -> Result<Vec<Value>, Diagnostic> {
         match v {
@@ -668,7 +668,7 @@ impl<'a> Interp<'a> {
             ExprKind::SelfExpr => env_get(env, "self").ok_or_else(|| {
                 Diagnostic::runtime("`self` is not bound here".to_string(), expr.span)
             }),
-            // `try expr` (M3; spec §9).
+            // `try expr` (spec §9).
             ExprKind::Try(inner) => self.eval_try(inner, expr.span, env),
             ExprKind::List(elems) => {
                 let mut vals = Vec::with_capacity(elems.len());
@@ -709,7 +709,7 @@ impl<'a> Interp<'a> {
                 self.eval_member(base, name, expr.span, env)
             }
             ExprKind::Match(m) => self.eval_match(m, expr.span, env),
-            // ----- M2 collections / comprehensions (Wave 1) -----
+            // ----- collections / comprehensions -----
             ExprKind::Map(pairs) => {
                 let mut entries: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
                 for (k_expr, v_expr) in pairs {
@@ -919,7 +919,7 @@ impl<'a> Interp<'a> {
             (Value::Int(a), Value::Float(b)) => bigint_to_f64(a).partial_cmp(b),
             (Value::Float(a), Value::Int(b)) => a.partial_cmp(&bigint_to_f64(b)),
             (Value::Str(a), Value::Str(b)) => a.partial_cmp(b),
-            // M3: user types that opted into `derive Ord` compare structurally.
+            // User types that opted into `derive Ord` compare structurally.
             (Value::Struct(_), Value::Struct(_)) | (Value::Enum(_), Value::Enum(_)) => {
                 Some(compare_values(l, r, &self.registry, span)?)
             }
@@ -980,7 +980,7 @@ impl<'a> Interp<'a> {
             (Value::Float(a), Value::Float(b)) => Ok(self.float_arith(op, *a, *b)),
             // No implicit Int->Float coercion for + - * (would silently lose
             // BigInt precision). Mixed operands are a runtime error to keep the
-            // numeric story honest in M1.
+            // numeric story honest.
             (Value::Int(_), Value::Float(_)) | (Value::Float(_), Value::Int(_)) => {
                 Err(Diagnostic::runtime(
                     "mixed Int/Float arithmetic is not allowed (convert explicitly)".to_string(),
@@ -1182,7 +1182,7 @@ impl<'a> Interp<'a> {
 
         // Otherwise: an ordinary function/closure/builtin call.
         let callee_v = self.eval(callee, env)?;
-        // A named `fn` supports named call args and default values (M2 Wave 1);
+        // A named `fn` supports named call args and default values;
         // bind directly from the raw `Arg`s so names/defaults are honoured.
         if let Value::Closure(c) = &callee_v {
             if let ClosureKind::Function(f) = &c.kind {
@@ -1261,7 +1261,7 @@ impl<'a> Interp<'a> {
                 for (p, v) in l.params.iter().zip(args.into_iter()) {
                     env_define(&call_scope, p, v, false);
                 }
-                // A lambda body is a single expression. A `try` inside it (M3)
+                // A lambda body is a single expression. A `try` inside it
                 // unwinds to here, the lambda's own boundary.
                 let r = self.eval(&l.body, &call_scope);
                 match r {
@@ -1274,7 +1274,7 @@ impl<'a> Interp<'a> {
 
     /// Bind already-evaluated **positional** args to params (the `self` receiver,
     /// if any, is pre-bound by the caller). Trailing params that have a default
-    /// value (M2 Wave 1) may be omitted; their defaults are evaluated in `scope`.
+    /// value may be omitted; their defaults are evaluated in `scope`.
     /// Used by the value-call path (`apply` — lambdas-as-functions, `main`).
     fn bind_params(
         &mut self,
@@ -1316,7 +1316,7 @@ impl<'a> Interp<'a> {
     }
 
     /// Bind a function/method call's raw [`Arg`]s to `params`, honouring
-    /// **named arguments** and **default values** (M2 Wave 1). Positional args
+    /// **named arguments** and **default values**. Positional args
     /// fill params left-to-right; named args match by parameter name; any param
     /// left unfilled uses its default or is an arity/missing-argument error.
     /// Args are evaluated in `caller_env`; defaults in the new `scope`.
@@ -1423,7 +1423,7 @@ impl<'a> Interp<'a> {
     /// per-type method table. Only user `Struct`/`Enum` receivers then resolve to
     /// declared `impl` methods. All other receiver types (`List`, `Str`, `Map`,
     /// `Set`, `Tuple`, and range-lists) route to [`Self::call_builtin_method`] —
-    /// the built-in method table that Wave 1-A fills in.
+    /// the built-in method table.
     fn call_method(
         &mut self,
         recv: Value,
@@ -1479,7 +1479,7 @@ impl<'a> Interp<'a> {
         // env chain). Methods resolve other top-level names through the call
         // env's root; we use the call-site env's chain root so globals (other
         // fns) are visible. Bind `self` first, then params (named args + default
-        // values honoured, M2 Wave 1).
+        // values honoured).
         let method_scope = Scope::child(&root_of(env));
         env_define(&method_scope, "self", recv, false);
         self.bind_call(&method.params, args, &method_scope, &method.name, span, env)?;
@@ -1488,7 +1488,7 @@ impl<'a> Interp<'a> {
         self.finish_body(body, "`break`/`continue` outside a loop", span)
     }
 
-    /// Evaluate `try expr` (M3; spec §9). `expr` must produce a `Result`: `Ok(v)`
+    /// Evaluate `try expr` (spec §9). `expr` must produce a `Result`: `Ok(v)`
     /// yields `v`; `Err(..)` is stashed in `self.propagating` and unwound via a
     /// sentinel error to the nearest call boundary ([`Self::finish_body`]), which
     /// returns it as the enclosing function's value.
@@ -1514,7 +1514,7 @@ impl<'a> Interp<'a> {
     }
 
     /// Collapse a function/method/lambda body result into the call's value,
-    /// honoring an in-flight `try` propagation (M3): a body that errored while
+    /// honoring an in-flight `try` propagation: a body that errored while
     /// `self.propagating` is set is a `try` unwind, so the propagated `Err`
     /// becomes this call's return value rather than a runtime error.
     fn finish_body(&mut self, body: FlowResult, message: &str, span: Span) -> EvalResult {
@@ -1735,7 +1735,7 @@ impl<'a> Interp<'a> {
             }
             // A guard (`pattern if cond:`) is evaluated in the arm scope, so it
             // sees the pattern's bindings. It must be `Bool` (no truthiness); a
-            // false guard falls through to the next arm (M2 Wave 2).
+            // false guard falls through to the next arm.
             if let Some(guard) = &arm.guard {
                 if !self.eval_bool_cond(guard, &arm_scope)? {
                     continue;
@@ -1798,8 +1798,8 @@ impl<'a> Interp<'a> {
                 if subs.len() != inst.payload.len() {
                     return Ok(false);
                 }
-                // Sub-patterns are full patterns (recursive as of M2); the flat
-                // M1 cases (`_`, name, `null`, literal) recurse here unchanged.
+                // Sub-patterns are full patterns (recursive); the flat
+                // cases (`_`, name, `null`, literal) recurse here unchanged.
                 for (sub, payload_v) in subs.iter().zip(inst.payload.iter()) {
                     if !self.try_match(sub, payload_v, scope)? {
                         return Ok(false);
@@ -1808,7 +1808,7 @@ impl<'a> Interp<'a> {
                 Ok(true)
             }
             // An or-pattern matches if ANY alternative matches; the first
-            // matching alternative's bindings stick (M2). Alternatives are tried
+            // matching alternative's bindings stick. Alternatives are tried
             // left-to-right against the *same* arm scope. A non-firing arm is
             // discarded by `eval_match` (it builds a fresh scope per arm), so no
             // stray binding from a failed alternative ever escapes.
@@ -1821,7 +1821,7 @@ impl<'a> Interp<'a> {
                 Ok(false)
             }
             // A tuple pattern matches a `Value::Tuple` of equal arity, recursing
-            // element-wise (M2). Nested patterns thus destructure deeply.
+            // element-wise. Nested patterns thus destructure deeply.
             PatternKind::Tuple(elems) => {
                 let items = match val {
                     Value::Tuple(items) => items,

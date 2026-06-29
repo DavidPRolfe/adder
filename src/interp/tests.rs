@@ -72,7 +72,7 @@
 
     /// Lex + parse + run a source program, then evaluate its **final**
     /// expression statement, returning that value. Earlier statements run for
-    /// their effects (bindings, fn decls). Used by the M2 surface tests, which
+    /// their effects (bindings, fn decls). Used by the surface tests, which
     /// are far clearer as source than as hand-built AST.
     fn eval_src(src: &str) -> Value {
         let toks = crate::lexer::lex(src).expect("source should lex");
@@ -633,14 +633,14 @@
         }
     }
 
-    // ---- the MVP showcase, built by hand ---------------------------------
+    // ---- the showcase, built by hand ---------------------------------
 
-    /// Reconstructs the §13 evaluator from `02-mvp-scope.md` as a hand-built
-    /// `Program` and confirms `eval((1+2)*3)` is `9.0` and `Show`s as `"9.0"`.
+    /// Reconstructs the showcase evaluator as a hand-built `Program` and
+    /// confirms `eval((1+2)*3)` is `9.0` and `Show`s as `"9.0"`.
     ///
-    /// This is the Milestone-1 definition-of-done for the interpreter: enums
-    /// with data, recursion, an exhaustive `match` (with a `panic` guard arm),
-    /// `fn` signatures, `val`-style bindings, and float arithmetic together.
+    /// Exercises the interpreter end to end: enums with data, recursion, an
+    /// exhaustive `match` (with a `panic` guard arm), `fn` signatures,
+    /// `val`-style bindings, and float arithmetic together.
     #[test]
     fn showcase_evaluator_yields_9_0() {
         // Helpers to spell out the AST tersely.
@@ -981,7 +981,7 @@
     }
 
     // =======================================================================
-    // M2 Wave 1-A — built-in method dispatch (List / Map / Set / String)
+    // Built-in method dispatch (List / Map / Set / String)
     // =======================================================================
 
     /// Build a `Value::List` from raw `Int`s.
@@ -1504,8 +1504,8 @@
         assert!(r.unwrap_err().message.contains("no method"));
     }
     // =====================================================================
-    // M2 Wave 1-B — collections, comprehensions, tuples, default/named args.
-    // Asserted on structure / scalars (not Map/Set `Show`, which W1-A owns).
+    // Collections, comprehensions, tuples, default/named args.
+    // Asserted on structure / scalars (not Map/Set `Show`, covered above).
     // =====================================================================
 
     /// Collect a `Value::List`'s elements, or panic.
@@ -1664,7 +1664,7 @@
         assert!(r.is_err());
     }
 
-    // ----- M2 Wave 2-A: match guards / or-patterns / tuple+nested patterns ----
+    // ----- match guards / or-patterns / tuple+nested patterns ----
 
     #[test]
     fn match_guard_true_takes_arm() {
@@ -1744,7 +1744,7 @@
         let src = "enum Tag:\n    N(Int)\nv = Tag.N(2)\nmatch v:\n    .N(1): 10\n    .N(2): 20\n    .N(x): x\n";
         assert_eq!(as_int(&eval_src(src)), 20);
     }
-    // ---- M2 Wave 2-B: `?.` safe-call and `.expect` -----------------------
+    // ---- `?.` safe-call and `.expect` -----------------------
 
     #[test]
     fn safe_member_on_null_yields_null() {

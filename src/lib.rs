@@ -2,7 +2,8 @@
 //!
 //! Adder is a Python-readable, Rust-expressive language. This crate is the Adder
 //! interpreter: a tree-walker plus exactly two static checks. See the specs in
-//! `spec/` (especially `03-mvp-grammar.md`, the authority for surface syntax).
+//! `spec/`; the surface grammar spans `03-mvp-grammar.md`, `05-m2-grammar.md`,
+//! and `07-m3-grammar.md` (read together — each adds to the earlier grammar).
 //!
 //! ## Pipeline
 //!

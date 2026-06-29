@@ -2,12 +2,12 @@ use super::*;
 
 impl<'a> Parser<'a> {
     // =====================================================================
-    // Patterns (§5.8) — recursive as of M2
+    // Patterns (§5.8) — recursive
     // =====================================================================
 
     /// `pattern = primary_pattern { "or" primary_pattern }`.
     ///
-    /// The top level is an **or-pattern** (M2 Wave 2): one or more alternatives
+    /// The top level is an **or-pattern**: one or more alternatives
     /// separated by `or`, matching if *any* alternative matches. A single
     /// alternative collapses to that pattern (no `Or` wrapper). Or-patterns
     /// parse here both as a whole-arm pattern and, because variant sub-patterns
@@ -101,7 +101,7 @@ impl<'a> Parser<'a> {
                         span: span.merge(end),
                     })
                 } else if matches!(self.peek(), TokenKind::LParen) && (name == "Ok" || name == "Err") {
-                    // The prelude `Result` variants (M3; spec §9) may be matched
+                    // The prelude `Result` variants (spec §9) may be matched
                     // unqualified — `Ok(v):` / `Err(e):` — mirroring their bare
                     // `Ok(...)` / `Err(...)` constructors. User enum variants
                     // still name their enum (the branch below).
@@ -135,9 +135,9 @@ impl<'a> Parser<'a> {
     /// A niladic variant (no parens) yields an empty `subs` list. Returns the
     /// sub-patterns and the span of the variant's last token.
     ///
-    /// As of M2 the sub-patterns are full [`Pattern`]s (recursive), so a
+    /// The sub-patterns are full [`Pattern`]s (recursive), so a
     /// variant's payload may itself contain variant/tuple/or patterns (nested
-    /// destructuring). The flat M1 cases (`_`, a name, `null`, a literal) are
+    /// destructuring). The flat cases (`_`, a name, `null`, a literal) are
     /// produced unchanged because [`Self::parse_pattern`] yields the same base
     /// kinds for them.
     pub(crate) fn parse_variant_subs(&mut self, name_span: Span) -> PResult<(Vec<Pattern>, Span)> {

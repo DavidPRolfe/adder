@@ -1,7 +1,7 @@
 //! Stage 3 — **static checks** (compile-time): the two marquee analyses.
 //!
 //! Owned by the *checks agent*. Runs over the [`Program`] *before* execution
-//! and owns exactly the two MVP static analyses (see `02-mvp-scope.md`):
+//! and owns exactly the two static analyses:
 //!
 //! 1. **Match exhaustiveness** — a `match` over an enum must cover every
 //!    variant (or use `_`). Removing an arm is a compile-time error.
@@ -15,11 +15,11 @@
 //!
 //! ## Design notes
 //!
-//! Neither analysis runs full type inference (out of scope for M1). Both are
+//! Neither analysis runs full type inference. Both are
 //! deliberately **conservative**: they only fire when the relevant fact (the
 //! scrutinee is a known enum / a name is still nullable at a use site) can be
 //! *proven* from local annotations and obvious constructions. Preferring zero
-//! false positives over completeness is the explicit M1 tradeoff.
+//! false positives over completeness is a deliberate tradeoff.
 //!
 //! Contract: `Ok(())` if the program passes, else **all** collected
 //! [`Diagnostic`]s.
@@ -113,7 +113,7 @@ impl EnumInfo {
             enums.insert(decl.name.clone(), variants);
         };
 
-        // M3: seed the prelude `Result` enum (spec §9) so a `match` over a
+        // Seed the prelude `Result` enum so a `match` over a
         // `Result` is exhaustiveness-checked and `Ok`/`Err` resolve to it.
         record(&crate::ast::result_enum_decl(), &mut enums, &mut variant_owner);
 

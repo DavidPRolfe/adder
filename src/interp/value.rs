@@ -34,20 +34,20 @@ pub enum Value {
     Str(String),
     /// A list, mutable and shared by reference.
     List(Rc<RefCell<Vec<Value>>>),
-    /// A map (M2), insertion-ordered for stable `Show`. Stored as a `Vec` of
+    /// A map, insertion-ordered for stable `Show`. Stored as a `Vec` of
     /// key/value pairs rather than a hash map because keys are arbitrary
     /// (structurally-hashed) runtime values and insertion order must be
     /// preserved; mutable and shared by reference.
     /// Produced and consumed by map literals / comprehensions / built-in
     /// methods.
     Map(Rc<RefCell<Vec<(Value, Value)>>>),
-    /// A set (M2), insertion-ordered, deduplicated by structural equality.
+    /// A set, insertion-ordered, deduplicated by structural equality.
     /// Stored as a `Vec` for the same reasons as [`Value::Map`]; mutable and
     /// shared by reference.
     /// Produced and consumed by set literals / comprehensions / built-in
     /// methods.
     Set(Rc<RefCell<Vec<Value>>>),
-    /// A tuple (M2): a fixed, immutable sequence of values. Shared by reference
+    /// A tuple: a fixed, immutable sequence of values. Shared by reference
     /// (the contents never mutate, so no `RefCell`).
     /// Produced and consumed by tuple literals / patterns.
     Tuple(Rc<Vec<Value>>),
@@ -124,9 +124,9 @@ pub enum Builtin {
     /// `Set()` — constructs an empty set (the `{}` literal is an empty *map*,
     /// so the empty set needs its own spelling; see spec §3).
     Set,
-    /// `Ok(value)` — constructs the prelude `Result.Ok` variant (M3; spec §9).
+    /// `Ok(value)` — constructs the prelude `Result.Ok` variant (spec §9).
     Ok,
-    /// `Err(value)` — constructs the prelude `Result.Err` variant (M3; spec §9).
+    /// `Err(value)` — constructs the prelude `Result.Err` variant (spec §9).
     Err,
 }
 

@@ -1,10 +1,9 @@
-//! The **parser ↔ checks ↔ interpreter contract**: the full Milestone-1 AST.
+//! The **parser ↔ checks ↔ interpreter contract**: the full AST.
 //!
 //! This is the most load-bearing file in the crate. The parser
 //! ([`crate::parser::parse`]) produces a [`Program`]; the static checks
 //! ([`crate::checks::check`]) and the interpreter ([`crate::interp::run`]) both
-//! consume it. It is intended to be **complete** for M1 — downstream agents
-//! should not need to modify it.
+//! consume it.
 //!
 //! It mirrors grammar §2–§7. Where the grammar leaves something *semantic*
 //! (e.g. whether a call is a function call or a struct construction, whether a
@@ -87,10 +86,10 @@ pub enum StmtKind {
     Enum(EnumDecl),
 
     /// An inherent `impl Type:` block (grammar §4.6), or a trait impl
-    /// `impl Trait for Type:` (M3) when [`ImplDecl::trait_name`] is set.
+    /// `impl Trait for Type:` when [`ImplDecl::trait_name`] is set.
     Impl(ImplDecl),
 
-    /// A `trait` declaration (M3; spec §7).
+    /// A `trait` declaration (spec §7).
     Trait(TraitDecl),
 }
 
@@ -102,19 +101,18 @@ pub enum StmtKind {
 /// - `x: T = e`         → `is_val = false`, `ty = Some(T)`  (typed mutable)
 /// - `x = e`            → `is_val = false`, `ty = None`      (inferred mutable)
 ///
-/// As of M2 the bound l-value is a [`Binder`]: a single `name` ([`Binder::Name`])
+/// The bound l-value is a [`Binder`]: a single `name` ([`Binder::Name`])
 /// or a tuple destructure `val (a, b) = pair` ([`Binder::Tuple`]). The `name`
-/// field is kept for the common single-name case so M1 code paths that read it
-/// stay unchanged; for the tuple form it mirrors the first destructured name as
-/// a stable best-effort label. Consumers that must distinguish the shapes read
-/// `binder`.
+/// field is kept for the common single-name case; for the tuple form it mirrors
+/// the first destructured name as a stable best-effort label. Consumers that
+/// must distinguish the shapes read `binder`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     /// The bound name (single-name form). For a tuple binder this mirrors the
     /// binder's first name as a stable best-effort label; read `binder` for the
     /// authoritative shape.
     pub name: String,
-    /// The l-value being bound: a single name or a tuple destructure (M2).
+    /// The l-value being bound: a single name or a tuple destructure.
     pub binder: Binder,
     /// `true` for an immutable `val` binding; `false` for mutable.
     pub is_val: bool,
@@ -124,13 +122,13 @@ pub struct Binding {
     pub value: Expr,
 }
 
-/// The l-value of a [`Binding`] or a [`ForStmt`] (M2): either a single name or a
+/// The l-value of a [`Binding`] or a [`ForStmt`]: either a single name or a
 /// tuple of names destructured from the bound value. Mirrors
 /// [`ComprehensionBinder`]; kept distinct so the two surfaces can diverge later
 /// (e.g. nested binders) without coupling.
 ///
-/// M1 only ever produced single names; [`Binder::Name`] is that case and is the
-/// default the parser emits for `for x in …` / `val x = …`.
+/// [`Binder::Name`] is the single-name case and is the default the parser emits
+/// for `for x in …` / `val x = …`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Binder {
     /// A single name (`x`).
@@ -188,19 +186,19 @@ pub struct WhileStmt {
     pub body: Block,
 }
 
-/// `for binder in iter: suite` (grammar §4.2). M1 expects `iter` to be a range
+/// `for binder in iter: suite` (grammar §4.2). `iter` is expected to be a range
 /// or a list (enforced at runtime).
 ///
-/// As of M2 the loop binder is a [`Binder`]: a single `var` ([`Binder::Name`])
+/// The loop binder is a [`Binder`]: a single `var` ([`Binder::Name`])
 /// or a tuple destructure `for (k, v) in m.items()` ([`Binder::Tuple`]). As with
-/// [`Binding`], the `var` field is kept for the single-name case (M1 code paths
-/// read it unchanged); for the tuple form it mirrors the first destructured name.
+/// [`Binding`], the `var` field is kept for the single-name case; for the tuple
+/// form it mirrors the first destructured name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForStmt {
     /// The loop variable (single-name form). For a tuple binder this mirrors the
     /// binder's first name; read `binder` for the authoritative shape.
     pub var: String,
-    /// The loop binder: a single name or a tuple destructure (M2).
+    /// The loop binder: a single name or a tuple destructure.
     pub binder: Binder,
     pub iter: Expr,
     pub body: Block,
@@ -227,13 +225,12 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: String,
-    /// Declared type parameters `[T: Bound, …]` (M3; spec §10). **Parsed, not
-    /// checked** — erased at runtime (typed-lite). Empty for a non-generic `fn`.
+    /// Declared type parameters `[T: Bound, …]` (spec §10). **Parsed, not
+    /// checked** — erased at runtime. Empty for a non-generic `fn`.
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     /// Result type from a `-> T` clause; `None` means unit `()`. (The field name
-    /// `returns` is kept for stability; the surface syntax is `->` as of M2 —
-    /// the `returns` keyword was dropped.)
+    /// `returns` is kept for stability; the surface syntax is `->`.)
     pub returns: Option<Type>,
     pub body: Block,
     /// Doc comment (`##`) captured immediately above, if any.
@@ -248,8 +245,7 @@ pub enum Param {
     /// (validity resolved by checks/interp). Untyped.
     SelfRecv,
     /// A fully annotated positional parameter `NAME: type`, with an optional
-    /// **default value** `NAME: type = expr` (M2 Wave 1). The parser produces
-    /// `default: None` until default args are wired up in Wave 1.
+    /// **default value** `NAME: type = expr`.
     Named {
         name: String,
         ty: Type,
@@ -263,10 +259,10 @@ pub enum Param {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDecl {
     pub name: String,
-    /// Declared type parameters `[T, …]` (M3). Erased at runtime.
+    /// Declared type parameters `[T, …]`. Erased at runtime.
     pub type_params: Vec<TypeParam>,
-    /// Opt-in derives from a `derive Ord` line above the declaration (M3;
-    /// spec §7.1). Only `Ord` is meaningful in M3 (`Eq`/`Hash`/`Show` are
+    /// Opt-in derives from a `derive Ord` line above the declaration
+    /// (spec §7.1). Only `Ord` is meaningful (`Eq`/`Hash`/`Show` are
     /// automatic). Empty when no `derive` line is present.
     pub derives: Vec<String>,
     pub fields: Vec<FieldDecl>,
@@ -287,7 +283,7 @@ pub struct FieldDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDecl {
     pub name: String,
-    /// Declared type parameters `[T, …]` (M3). Erased at runtime. The prelude
+    /// Declared type parameters `[T, …]`. Erased at runtime. The prelude
     /// `Result[T, E]` enum is seeded with these set.
     pub type_params: Vec<TypeParam>,
     /// Opt-in derives (`derive Ord`); see [`StructDecl::derives`].
@@ -318,32 +314,32 @@ pub enum Payload {
 }
 
 /// An inherent `impl Type:` block of methods (grammar §4.6), or a **trait impl**
-/// `impl Trait for Type:` (M3; spec §7) when [`trait_name`](Self::trait_name) is
+/// `impl Trait for Type:` (spec §7) when [`trait_name`](Self::trait_name) is
 /// set. The first parsed type-path is the trait when a `for` clause follows it;
 /// otherwise it is the implementing type (an inherent impl).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImplDecl {
-    /// The type the methods are attached to (a `base_type` name in M1).
+    /// The type the methods are attached to (a `base_type` name).
     pub type_name: String,
-    /// The trait being implemented, for `impl Trait for Type:` (M3). `None` for
+    /// The trait being implemented, for `impl Trait for Type:`. `None` for
     /// an inherent `impl Type:` block.
     pub trait_name: Option<String>,
-    /// Declared type parameters `impl[T] … :` (M3). Erased at runtime.
+    /// Declared type parameters `impl[T] … :`. Erased at runtime.
     pub type_params: Vec<TypeParam>,
     pub methods: Vec<FnDecl>,
     pub span: Span,
 }
 
-/// A `trait` declaration (M3; spec §7): a set of **required** method signatures
+/// A `trait` declaration (spec §7): a set of **required** method signatures
 /// and optional **default** methods built on them. Dispatch and conformance are
-/// resolved at runtime (typed-lite — a missing required method surfaces when it
-/// is called; see `spec/06-m3-scope.md`).
+/// resolved at runtime — a missing required method surfaces when it
+/// is called.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitDecl {
     pub name: String,
-    /// Declared type parameters `trait Name[T]:` (M3). Erased at runtime.
+    /// Declared type parameters `trait Name[T]:`. Erased at runtime.
     pub type_params: Vec<TypeParam>,
-    /// Required methods — a signature with no body. Informational in M3.
+    /// Required methods — a signature with no body. Informational.
     pub required: Vec<TraitSig>,
     /// Default methods — a full `fn` with a body, inherited by an `impl` that
     /// does not override them.
@@ -352,7 +348,7 @@ pub struct TraitDecl {
     pub span: Span,
 }
 
-/// A required trait method signature (M3): a `fn` header with no body.
+/// A required trait method signature: a `fn` header with no body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraitSig {
     pub name: String,
@@ -362,9 +358,9 @@ pub struct TraitSig {
     pub span: Span,
 }
 
-/// A declared type parameter `T` or `T: Bound and Bound2` (M3; spec §10).
+/// A declared type parameter `T` or `T: Bound and Bound2` (spec §10).
 /// **Parsed, not checked** — the bounds document intent; the tree-walker erases
-/// `T` at runtime (typed-lite, see `spec/06-m3-scope.md`).
+/// `T` at runtime.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeParam {
     pub name: String,
@@ -447,9 +443,8 @@ pub enum ExprKind {
     },
 
     /// A member access `base.name` (grammar §5.5), or the **safe-call**
-    /// `base?.name` (M2 Wave 2) when `safe` is `true`. A safe access yields
-    /// `null` if `base` is `null` instead of erroring. All M1 constructions set
-    /// `safe: false`.
+    /// `base?.name` when `safe` is `true`. A safe access yields
+    /// `null` if `base` is `null` instead of erroring.
     Member {
         base: Box<Expr>,
         name: String,
@@ -461,28 +456,27 @@ pub enum ExprKind {
     /// appear wherever a primary is allowed.
     Match(MatchExpr),
 
-    // ----- Collections & comprehensions (M2; spec §3, §11) -----
-    /// A map literal `{ k: v, … }` (M2). Insertion-ordered key/value pairs.
+    // ----- Collections & comprehensions (spec §3, §11) -----
+    /// A map literal `{ k: v, … }`. Insertion-ordered key/value pairs.
     /// `{}` is an empty **map** (an empty set is spelled `Set()`).
     Map(Vec<(Expr, Expr)>),
 
-    /// A set literal `{ x, … }` (M2). At least one element (the empty case is a
+    /// A set literal `{ x, … }`. At least one element (the empty case is a
     /// `Map`, so `{}` never parses as a set).
     Set(Vec<Expr>),
 
-    /// A tuple literal `(a, b, …)` (M2). Always has at least two elements — a
+    /// A tuple literal `(a, b, …)`. Always has at least two elements — a
     /// single parenthesized expression is grouping, not a 1-tuple.
     Tuple(Vec<Expr>),
 
     /// A comprehension `[out for binder in iter (if cond)?]` and its map/set
-    /// forms (M2). See [`Comprehension`].
+    /// forms. See [`Comprehension`].
     Comprehension(Comprehension),
 
-    /// A `try expr` (M3; spec §9): evaluate `expr` (a `Result`), unwrap on `Ok`,
+    /// A `try expr` (spec §9): evaluate `expr` (a `Result`), unwrap on `Ok`,
     /// or early-return the `Err` from the enclosing function. The early-return is
     /// runtime control flow (see `crate::interp`), so this is its own node rather
-    /// than a [`UnOp`]. Binds tighter than arithmetic (grammar §6 of the M3
-    /// grammar).
+    /// than a [`UnOp`]. Binds tighter than arithmetic.
     Try(Box<Expr>),
 }
 
@@ -530,7 +524,7 @@ pub enum Arg {
     Named { name: String, value: Expr },
 }
 
-/// A comprehension (M2; spec §11): sugar over a single `for` loop that builds a
+/// A comprehension (spec §11): sugar over a single `for` loop that builds a
 /// list, set, or map. The general shape is
 /// `OUTPUT for BINDER in ITER [ if COND ]`, wrapped in `[ ]` (list/`{ }` for
 /// set/map). The binder is scoped to the comprehension.
@@ -631,9 +625,8 @@ pub struct MatchExpr {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchArm {
     pub pattern: Pattern,
-    /// An optional `if COND` **match guard** (M2 Wave 2). A guarded arm does not
-    /// count toward exhaustiveness ([`crate::checks`]). The parser produces
-    /// `None` until guards are wired up in Wave 2.
+    /// An optional `if COND` **match guard**. A guarded arm does not
+    /// count toward exhaustiveness ([`crate::checks`]).
     pub guard: Option<Expr>,
     /// The arm body. Its *value* is its final expression (a semantic rule
     /// resolved by [`crate::interp`]).
@@ -643,9 +636,9 @@ pub struct MatchArm {
 
 /// A pattern node: a [`PatternKind`] plus its span (grammar §5.8).
 ///
-/// As of M2, patterns are **recursive**: a variant's sub-patterns (and tuple
+/// Patterns are **recursive**: a variant's sub-patterns (and tuple
 /// elements) are themselves full [`Pattern`]s, so nested destructuring like
-/// `.Some(.Pair(a, b))` is representable. The previously-flat M1 cases (`_`, a
+/// `.Some(.Pair(a, b))` is representable. The flat cases (`_`, a
 /// name, `null`, a literal) are the base [`PatternKind`] variants.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
@@ -653,7 +646,7 @@ pub struct Pattern {
     pub span: Span,
 }
 
-/// A pattern (grammar §5.8). Recursive as of M2.
+/// A pattern (grammar §5.8). Recursive.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PatternKind {
     /// `_` — wildcard, matches anything without binding.
@@ -670,7 +663,7 @@ pub enum PatternKind {
     /// drops the parentheses (`.Empty` / `Enum.Empty`). A *bare* `NAME(…)` is
     /// no longer a variant pattern (a bare `NAME` is a [`PatternKind::Binding`]).
     ///
-    /// As of M2, `subs` are full [`Pattern`]s, so a sub-pattern may itself be a
+    /// `subs` are full [`Pattern`]s, so a sub-pattern may itself be a
     /// variant/tuple/or pattern (nested destructuring).
     Variant {
         /// `Some("Color")` for the qualified form `Color.Red`; `None` for the
@@ -679,11 +672,10 @@ pub enum PatternKind {
         name: String,
         subs: Vec<Pattern>,
     },
-    /// An **or-pattern** `p1 or p2 or …` (M2 Wave 2): matches if any alternative
-    /// matches. Alternatives bind the same names (enforced later). The parser
-    /// produces this only once or-patterns are wired up in Wave 2.
+    /// An **or-pattern** `p1 or p2 or …`: matches if any alternative
+    /// matches. Alternatives bind the same names (enforced later).
     Or(Vec<Pattern>),
-    /// A **tuple pattern** `(p1, p2, …)` (M2 Wave 2): destructures a tuple value
+    /// A **tuple pattern** `(p1, p2, …)`: destructures a tuple value
     /// element-wise. Always two or more elements.
     Tuple(Vec<Pattern>),
 }
@@ -723,25 +715,25 @@ pub enum BaseType {
     Named { name: String, args: Vec<Type> },
     /// The unit type `()`.
     Unit,
-    /// A **function type** `(T1, …, Tn) -> R` (M2; spec §6). Zero params is
+    /// A **function type** `(T1, …, Tn) -> R` (spec §6). Zero params is
     /// `() -> R`. Parsed and used for documentation/parameter signatures, but
-    /// not statically checked in M2 (typed-lite — see `spec/04-m2-scope.md`).
+    /// not statically checked.
     Fn {
         /// The parameter types (possibly empty).
         params: Vec<Type>,
         /// The result type. Always present (`-> R`); unit results are `()`.
         ret: Box<Type>,
     },
-    /// A **tuple type** `(A, B, …)` (M2; spec §6). Always has at least two
+    /// A **tuple type** `(A, B, …)` (spec §6). Always has at least two
     /// components — `(T)` is grouping, not a 1-tuple.
     Tuple(Vec<Type>),
 }
 
 // ===========================================================================
-// Prelude declarations (M3)
+// Prelude declarations
 // ===========================================================================
 
-/// The prelude `Result[T, E]` enum (M3; spec §9): `Ok(T)` / `Err(E)`.
+/// The prelude `Result[T, E]` enum (spec §9): `Ok(T)` / `Err(E)`.
 ///
 /// Both the checker ([`crate::checks`]) and the interpreter ([`crate::interp`])
 /// seed this same declaration so that `Ok`/`Err` construct, `match` over a

@@ -9,7 +9,7 @@
 //! integration test file pulls it in with `mod common;`.
 //!
 //! `#![allow(dead_code)]`: this module is compiled fresh into every integration
-//! test binary, and not every binary uses every helper (e.g. `m2_sets_maps`
+//! test binary, and not every binary uses every helper (e.g. `sets_maps`
 //! never asserts on `stderr`). Without this, an unused helper in some binary is
 //! a dead-code warning.
 #![allow(dead_code)]

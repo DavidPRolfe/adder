@@ -579,7 +579,7 @@ fn null_compare_to_null_ok() {
     assert_eq!(check_errs(&p), Vec::<String>::new());
 }
 
-// -------- M2 Wave 2-B: `?.` safe-call and `.expect` --------------------
+// -------- `?.` safe-call and `.expect` --------------------
 
 /// A safe member access on a `T?`, `x?.field`, handles null itself → Ok.
 #[test]
@@ -627,7 +627,7 @@ fn null_expect_ok() {
 }
 
 /// Sanity: a PLAIN member access on the same un-narrowed `T?` still errors,
-/// so the sugar above did not weaken the M1 check.
+/// so the sugar above did not weaken the check.
 #[test]
 fn null_plain_member_still_errors() {
     let body = vec![stmt(StmtKind::Expr(member(name("x"), "field")))];

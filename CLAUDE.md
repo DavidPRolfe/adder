@@ -2,8 +2,11 @@
 
 Guidance for AI coding sessions on Adder — the tree-walking
 interpreter for a Python-readable, Rust-expressive language. The spec in
-[`spec/`](spec/) is the source of truth; [`spec/03-mvp-grammar.md`](spec/03-mvp-grammar.md)
-is the authority for surface syntax. Don't duplicate the spec here — link to it.
+[`spec/`](spec/) is the source of truth; the surface grammar is split across
+[`spec/03-mvp-grammar.md`](spec/03-mvp-grammar.md),
+[`spec/05-m2-grammar.md`](spec/05-m2-grammar.md), and
+[`spec/07-m3-grammar.md`](spec/07-m3-grammar.md) (read them together — each later
+file adds to the earlier grammar). Don't duplicate the spec here — link to it.
 
 ## Pipeline
 
@@ -59,10 +62,12 @@ deliberate (the project is "typed-lite", not a full checker).
 
 ## Syntax cheat-sheet (do not regress to older forms)
 
-Verify any new example against `examples/` and `spec/03-mvp-grammar.md`. The M2
-surface syntax (pipelines, comprehensions, tuples, Map/Set, match guards, `?.`)
-is documented in [`spec/04-m2-scope.md`](spec/04-m2-scope.md) and
-[`spec/05-m2-grammar.md`](spec/05-m2-grammar.md).
+Verify any new example against `examples/` and the grammar specs. Pipelines,
+comprehensions, tuples, Map/Set, match guards, and `?.` are documented in
+[`spec/04-m2-scope.md`](spec/04-m2-scope.md) and
+[`spec/05-m2-grammar.md`](spec/05-m2-grammar.md); traits, `Result`/`try`,
+`derive`, and generics in [`spec/06-m3-scope.md`](spec/06-m3-scope.md) and
+[`spec/07-m3-grammar.md`](spec/07-m3-grammar.md).
 
 - **Files** use the `.adr` extension.
 - **Functions**: fully annotated — `fn f(a: Int) -> Int:`; omit the arrow for unit.
@@ -111,11 +116,11 @@ The M2 **definition of done** lives in `tests/m2_showcase.rs` /
 The M3 **definition of done** lives in `tests/m3_showcase.rs` / `tests/m3_features.rs` /
 `examples/m3_showcase.adr` and [`spec/06-m3-scope.md`](spec/06-m3-scope.md).
 
-## M3 — landed, but **typed-lite** (don't over-assume)
+## Runtime-checked features (typed-lite — don't over-assume)
 
-M3 ([`spec/06-m3-scope.md`](spec/06-m3-scope.md), grammar
-[`spec/07-m3-grammar.md`](spec/07-m3-grammar.md)) added these, all *runtime*-checked —
-the two static checks are unchanged except that exhaustiveness now also sees the prelude
+These features ([`spec/06-m3-scope.md`](spec/06-m3-scope.md), grammar
+[`spec/07-m3-grammar.md`](spec/07-m3-grammar.md)) are all *runtime*-checked — the
+two static checks are unchanged except that exhaustiveness also sees the prelude
 `Result` enum:
 
 - **Traits** — `trait` (required sigs + default methods), `impl Trait for Type`, `Self`
@@ -132,7 +137,7 @@ the two static checks are unchanged except that exhaustiveness now also sees the
   gated by `Registry::ord_types`; enables `<`/`<=`/`>`/`>=` and `.sort()`/`sorted`/`min`/
   `max` on user types. `Eq`/`Hash`/`Show` remain automatic.
 - **Generics** — `[T: Bound and Bound2]` on `fn`/`struct`/`enum`/`impl`/`trait` are
-  **parsed and erased**, never checked (mirrors M2's function-type posture).
+  **parsed and erased**, never checked (like function types — parsed, not checked).
 
 ## Deferred — NOT yet implemented (M4+)
 
@@ -140,6 +145,6 @@ These are not yet built — don't assume they exist:
 
 - **Full type checker + inference** (only the two static checks exist) — the M4 posture
   change; also home to **generic bound checking** and **trait conformance** as static checks
-- Lazy iterator pipelines (M2/M3 ship eager)
+- Lazy iterator pipelines (pipelines currently evaluate eagerly)
 - Modules / imports
 - Associated types/constants on traits; `Char`; REPL; word-ranges; `private`

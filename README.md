@@ -6,8 +6,8 @@ while borrowing the *expressive* parts of Rust's type system (algebraic data
 types, exhaustive pattern matching, nullable types) and leaving behind the parts
 that fight the programmer (lifetimes, borrowing, ownership). You write types at
 the edges — on function signatures — and they are checked underneath. This repo
-is the interpreter (Milestones 1 and 2 merged): a tree-walking interpreter
-written in Rust. The full language vision lives in [`spec/`](spec/).
+is the interpreter: a tree-walking interpreter written in Rust. The full
+language vision lives in [`spec/`](spec/).
 
 > The name nods to its inspirations: a smaller, friendlier cousin of the
 > **Python**, with some of the **Rust** in its scales.
@@ -67,12 +67,13 @@ The [`examples/errors/`](examples/errors/) directory holds programs that are
 
 ## Language tour
 
-This covers the core surface syntax. The authority is
-[`spec/03-mvp-grammar.md`](spec/03-mvp-grammar.md); the scope (what's in vs.
-deferred) is [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md). The M2 additions
-(pipelines, comprehensions, tuples, Map/Set, match guards, `?.`) are covered in
-[`spec/04-m2-scope.md`](spec/04-m2-scope.md) and
-[`spec/05-m2-grammar.md`](spec/05-m2-grammar.md).
+This covers the core surface syntax. The grammar is specified across
+[`spec/03-mvp-grammar.md`](spec/03-mvp-grammar.md),
+[`spec/05-m2-grammar.md`](spec/05-m2-grammar.md), and
+[`spec/07-m3-grammar.md`](spec/07-m3-grammar.md) (each adds to the last); the
+matching scope docs (`02`/`04`/`06`) say what's in vs. deferred. Beyond the
+basics below, the language also has pipelines, comprehensions, tuples, Map/Set,
+match guards, `?.`, traits, `Result`/`try`, and `derive`.
 
 **Functions** have fully annotated signatures (parameter types plus an `->` result
 clause; omit the `->` for no result). The body returns its final expression
@@ -163,40 +164,44 @@ fn add_one(x: Int?) -> Int:
 
 ## Project status
 
-Milestones 1 and 2 merged — a **typed-lite tree-walker**. Rather than a full type
-checker, it runs exactly two static checks before execution:
+A **typed-lite tree-walker**. Rather than a full type checker, it runs exactly
+two static checks before execution:
 
 1. **Match exhaustiveness** — a `match` over an enum must cover every variant (or
    use `_`).
 2. **Null-narrowing** — using a `T?` value where a `T` is required is a
    compile-time error unless it has been narrowed or defaulted.
 
-Everything else (e.g. `val`-immutability and the Bool-condition rule) is enforced
-at runtime for now. This is a pre-1.0 interpreter and the language will change.
-See [`spec/02-mvp-scope.md`](spec/02-mvp-scope.md) and
-[`spec/04-m2-scope.md`](spec/04-m2-scope.md) for the full in-scope / deferred
-breakdown — traits, generics, `Result`/`try`, modules, and full inference are
-deferred to later milestones (M3+).
+Everything else (e.g. `val`-immutability, the Bool-condition rule, and trait
+method dispatch) is enforced at runtime. The implemented surface includes enums,
+structs and methods, traits, nullability, collections (List/Map/Set), pipelines,
+comprehensions, `Result`/`try`, and opt-in `derive Ord`. A full type checker with
+inference, generic-bound checking, and trait conformance is the next milestone.
+
+This is a pre-1.0 interpreter and the language will change. The `spec/` scope docs
+([`02`](spec/02-mvp-scope.md) / [`04`](spec/04-m2-scope.md) /
+[`06`](spec/06-m3-scope.md)) give the full in-scope / deferred breakdown;
+modules/imports and lazy iterators remain deferred.
 
 ## Project layout
 
 ```
 spec/        Language spec: design principles (00), language reference (01),
-             MVP scope (02), M1 grammar (03), M2 scope (04), M2 grammar (05)
-src/         The interpreter, one file per pipeline stage:
+             and per-milestone scope + grammar docs (02–07)
+src/         The interpreter; each pipeline stage owns a module:
   token.rs     lexer<->parser contract (tokens, spans, string parts)
   ast.rs       parser<->checks<->interp contract (the syntax tree)
   error.rs     diagnostics shared by every stage
   lexer.rs     lex:   source -> tokens (+ indentation, string interpolation)
-  parser.rs    parse: tokens -> AST
-  checks.rs    check: exhaustiveness + null-narrowing
-  interp.rs    run:   the tree-walker + runtime enforcement
+  parser/      parse: tokens -> AST
+  checks/      check: exhaustiveness + null-narrowing
+  interp/      run:   the tree-walker + runtime enforcement
   lib.rs       pipeline overview and ownership notes
   main.rs      the `adder` CLI
 examples/    Runnable `.adr` programs (errors/ holds ones meant to be rejected;
              features/ covers individual language features)
-tests/       acceptance.rs (M1 definition-of-done), features.rs (per-feature
-             coverage), program_ledger.rs (the ledger example), and the M2
-             suites: m2_collections.rs, m2_nullable.rs, m2_patterns.rs,
-             m2_pipelines.rs, m2_sets_maps.rs, m2_showcase.rs
+tests/       acceptance.rs (definition-of-done), features.rs (per-feature
+             coverage), program_ledger.rs (the ledger example), the feature
+             suites (collections/nullable/patterns/pipelines/sets_maps), and the
+             showcase tests (m2_showcase.rs, m3_showcase.rs, m3_features.rs)
 ```

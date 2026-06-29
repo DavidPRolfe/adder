@@ -171,7 +171,7 @@ fn values_ops_corpus() {
 }
 
 // ===========================================================================
-// Traits (M3) — required + default methods, `impl ... for`, an inherited
+// Traits — required + default methods, `impl ... for`, an inherited
 // default, an override, and a trait-typed parameter dispatched at runtime.
 // ===========================================================================
 
@@ -192,7 +192,7 @@ fn traits_corpus() {
 }
 
 // ===========================================================================
-// Result + try (M3) — Ok/Err construction, `try` unwrap + early-return,
+// Result + try — Ok/Err construction, `try` unwrap + early-return,
 // a two-step `try` chain that short-circuits, bare and leading-dot patterns.
 // ===========================================================================
 
@@ -205,7 +205,7 @@ fn result_try_corpus() {
 }
 
 // ===========================================================================
-// derive Ord (M3) — lexicographic comparisons, in-place sort, min/max on a
+// derive Ord — lexicographic comparisons, in-place sort, min/max on a
 // derived struct, and variant-order comparison + sort on a derived enum.
 // ===========================================================================
 

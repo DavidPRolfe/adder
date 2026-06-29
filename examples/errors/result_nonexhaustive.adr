@@ -1,4 +1,4 @@
-## A `match` over a `Result` must cover both `Ok` and `Err` (M3; spec §9).
+## A `match` over a `Result` must cover both `Ok` and `Err`.
 ## This omits the `Err` arm, so exhaustiveness rejects it at compile time.
 
 fn main():
