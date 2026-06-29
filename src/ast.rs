@@ -101,17 +101,11 @@ pub enum StmtKind {
 /// - `x: T = e`         → `is_val = false`, `ty = Some(T)`  (typed mutable)
 /// - `x = e`            → `is_val = false`, `ty = None`      (inferred mutable)
 ///
-/// The bound l-value is a [`Binder`]: a single `name` ([`Binder::Name`])
-/// or a tuple destructure `val (a, b) = pair` ([`Binder::Tuple`]). The `name`
-/// field is kept for the common single-name case; for the tuple form it mirrors
-/// the first destructured name as a stable best-effort label. Consumers that
-/// must distinguish the shapes read `binder`.
+/// The bound l-value is a [`Binder`]: a single name (`val x = e`,
+/// [`Binder::Name`]) or a tuple destructure (`val (a, b) = pair`,
+/// [`Binder::Tuple`]). Consumers read `binder` for the authoritative shape.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
-    /// The bound name (single-name form). For a tuple binder this mirrors the
-    /// binder's first name as a stable best-effort label; read `binder` for the
-    /// authoritative shape.
-    pub name: String,
     /// The l-value being bound: a single name or a tuple destructure.
     pub binder: Binder,
     /// `true` for an immutable `val` binding; `false` for mutable.
@@ -189,15 +183,11 @@ pub struct WhileStmt {
 /// `for binder in iter: suite` (grammar §4.2). `iter` is expected to be a range
 /// or a list (enforced at runtime).
 ///
-/// The loop binder is a [`Binder`]: a single `var` ([`Binder::Name`])
-/// or a tuple destructure `for (k, v) in m.items()` ([`Binder::Tuple`]). As with
-/// [`Binding`], the `var` field is kept for the single-name case; for the tuple
-/// form it mirrors the first destructured name.
+/// The loop binder is a [`Binder`]: a single name (`for x in …`,
+/// [`Binder::Name`]) or a tuple destructure (`for (k, v) in m.items()`,
+/// [`Binder::Tuple`]). Consumers read `binder` for the authoritative shape.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ForStmt {
-    /// The loop variable (single-name form). For a tuple binder this mirrors the
-    /// binder's first name; read `binder` for the authoritative shape.
-    pub var: String,
     /// The loop binder: a single name or a tuple destructure.
     pub binder: Binder,
     pub iter: Expr,

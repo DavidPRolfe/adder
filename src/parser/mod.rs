@@ -219,17 +219,6 @@ impl<'a> Parser<'a> {
 // Free helpers
 // ===========================================================================
 
-/// The single-name *label* for a [`Binder`], used to fill the `name`/`var`
-/// fields kept for the common single-name case (see [`crate::ast::Binding`] /
-/// [`crate::ast::ForStmt`]). A tuple binder yields its first name; the empty
-/// case (never produced — tuple binders need ≥2 names) yields `"_"`.
-fn binder_label(binder: &Binder) -> String {
-    match binder {
-        Binder::Name(n) => n.clone(),
-        Binder::Tuple(names) => names.first().cloned().unwrap_or_else(|| "_".to_string()),
-    }
-}
-
 /// Build a `Binary` expression node, merging operand spans.
 fn make_binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     let span = lhs.span.merge(rhs.span);

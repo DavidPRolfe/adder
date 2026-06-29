@@ -142,7 +142,6 @@ impl<'a> Parser<'a> {
             let span = kw.merge(value.span);
             return Ok(Stmt {
                 kind: StmtKind::Binding(Binding {
-                    name: binder_label(&binder),
                     binder,
                     is_val: true,
                     ty: None,
@@ -162,8 +161,7 @@ impl<'a> Parser<'a> {
         let span = kw.merge(value.span);
         Ok(Stmt {
             kind: StmtKind::Binding(Binding {
-                binder: Binder::Name(name.clone()),
-                name,
+                binder: Binder::Name(name),
                 is_val: true,
                 ty,
                 value,
@@ -294,8 +292,7 @@ impl<'a> Parser<'a> {
             let span = start.merge(value.span);
             return Ok(Stmt {
                 kind: StmtKind::Binding(Binding {
-                    binder: Binder::Name(name.clone()),
-                    name,
+                    binder: Binder::Name(name),
                     is_val: false,
                     ty: Some(ty),
                     value,
@@ -318,8 +315,7 @@ impl<'a> Parser<'a> {
             // surface shape is faithful.
             Ok(Stmt {
                 kind: StmtKind::Binding(Binding {
-                    binder: Binder::Name(name.clone()),
-                    name,
+                    binder: Binder::Name(name),
                     is_val: false,
                     ty: None,
                     value,

@@ -100,7 +100,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_suite()?;
         let span = start.merge(body.span);
         Ok(Stmt {
-            kind: StmtKind::For(ForStmt { var: binder_label(&binder), binder, iter, body }),
+            kind: StmtKind::For(ForStmt { binder, iter, body }),
             span,
         })
     }

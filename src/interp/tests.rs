@@ -286,7 +286,6 @@
     fn val_reassignment_errs() {
         // val x = 1 ; x = 2  -> runtime error on the reassignment.
         let bind = st(StmtKind::Binding(Binding {
-            name: "x".to_string(),
             binder: Binder::Name("x".to_string()),
             is_val: true,
             ty: None,
@@ -305,7 +304,6 @@
     #[test]
     fn mutable_reassignment_ok() {
         let bind = st(StmtKind::Binding(Binding {
-            name: "x".to_string(),
             binder: Binder::Name("x".to_string()),
             is_val: false,
             ty: None,
@@ -330,14 +328,12 @@
     fn for_loop_accumulates_over_range() {
         // sum = 0 ; for x in 0..5: sum = sum + x   -> 0+1+2+3+4 = 10
         let init = st(StmtKind::Binding(Binding {
-            name: "sum".to_string(),
             binder: Binder::Name("sum".to_string()),
             is_val: false,
             ty: None,
             value: int(0),
         }));
         let for_stmt = st(StmtKind::For(ForStmt {
-            var: "x".to_string(),
             binder: Binder::Name("x".to_string()),
             iter: bin(BinOp::Range, int(0), int(5)),
             body: block(vec![st(StmtKind::Assign(Assign {
@@ -358,14 +354,12 @@
     fn for_loop_inclusive_range() {
         // for x in 0..=3 -> [0,1,2,3], sum 6
         let init = st(StmtKind::Binding(Binding {
-            name: "sum".to_string(),
             binder: Binder::Name("sum".to_string()),
             is_val: false,
             ty: None,
             value: int(0),
         }));
         let for_stmt = st(StmtKind::For(ForStmt {
-            var: "x".to_string(),
             binder: Binder::Name("x".to_string()),
             iter: bin(BinOp::RangeIncl, int(0), int(3)),
             body: block(vec![st(StmtKind::Assign(Assign {
@@ -558,7 +552,6 @@
             params: vec![],
             returns: None,
             body: block(vec![st(StmtKind::Binding(Binding {
-                name: "x".to_string(),
                 binder: Binder::Name("x".to_string()),
                 is_val: false,
                 ty: None,
@@ -753,7 +746,6 @@
                     guard: None,
                     body: block(vec![
                         st(StmtKind::Binding(Binding {
-                            name: "divisor".to_string(),
                             binder: Binder::Name("divisor".to_string()),
                             is_val: false,
                             ty: None,
@@ -909,7 +901,6 @@
                     guard: None,
                     body: block(vec![
                         st(StmtKind::Binding(Binding {
-                            name: "divisor".to_string(),
                             binder: Binder::Name("divisor".to_string()),
                             is_val: false,
                             ty: None,

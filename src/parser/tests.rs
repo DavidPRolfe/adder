@@ -65,7 +65,7 @@
         let p = parse_ok(toks);
         match &only_stmt(&p).kind {
             StmtKind::Binding(b) => {
-                assert_eq!(b.name, "x");
+                assert!(matches!(&b.binder, Binder::Name(n) if n == "x"));
                 assert!(b.is_val);
                 assert!(b.ty.is_none());
                 assert_eq!(b.value.kind, ExprKind::Int(BigInt::from(1)));
@@ -116,7 +116,7 @@
             StmtKind::Binding(b) => {
                 assert!(!b.is_val);
                 assert!(b.ty.is_some());
-                assert_eq!(b.name, "x");
+                assert!(matches!(&b.binder, Binder::Name(n) if n == "x"));
             }
             other => panic!("expected binding, got {:?}", other),
         }
@@ -131,7 +131,7 @@
             StmtKind::Binding(b) => {
                 assert!(!b.is_val);
                 assert!(b.ty.is_none());
-                assert_eq!(b.name, "count");
+                assert!(matches!(&b.binder, Binder::Name(n) if n == "count"));
             }
             other => panic!("expected binding, got {:?}", other),
         }
@@ -275,7 +275,7 @@
         let p = parse_ok(toks);
         match &only_stmt(&p).kind {
             StmtKind::For(f) => {
-                assert_eq!(f.var, "x");
+                assert!(matches!(&f.binder, Binder::Name(n) if n == "x"));
                 match &f.iter.kind {
                     ExprKind::Binary { op, .. } => assert_eq!(*op, BinOp::Range),
                     other => panic!("expected range, got {:?}", other),
@@ -1444,7 +1444,6 @@
         match &only_stmt(&p).kind {
             StmtKind::For(f) => {
                 assert!(matches!(&f.binder, Binder::Tuple(ns) if ns == &["k", "v"]));
-                assert_eq!(f.var, "k"); // label mirrors the first name
             }
             other => panic!("expected for, got {:?}", other),
         }
