@@ -487,6 +487,34 @@ fn or_pattern_with_wildcard_alternative_ok() {
     assert_eq!(check_errs(&p), Vec::<String>::new());
 }
 
+/// A non-exhaustive `match` *inside a guard expression* is still flagged — the
+/// guard is analyzed, not skipped. The outer match is exhaustive (`_`), so the
+/// sole error is the nested guard match missing `Blue`.
+#[test]
+fn nonexhaustive_match_in_guard_is_flagged() {
+    let nested = match_expr(
+        name("c"),
+        vec![
+            niladic_arm("Red", expr(ExprKind::Bool(true))),
+            niladic_arm("Green", expr(ExprKind::Bool(true))),
+            // Blue missing → the nested match is non-exhaustive.
+        ],
+    );
+    let guarded_red = MatchArm {
+        pattern: Pattern {
+            kind: PatternKind::Variant { enum_name: None, name: "Red".to_string(), subs: vec![] },
+            span: sp(),
+        },
+        guard: Some(nested),
+        body: block(vec![stmt(StmtKind::Expr(name("c")))]),
+        span: sp(),
+    };
+    let p = match_over_color(vec![guarded_red, wildcard_arm(name("c"))]);
+    let errs = check_errs(&p);
+    assert_eq!(errs.len(), 1, "expected one error, got {:?}", errs);
+    assert!(errs[0].contains("Blue"), "nested guard match should miss Blue: {}", errs[0]);
+}
+
 // ----------------------- Null-narrowing tests --------------------------
 
 /// `fn f(x: T?)` doing `x.field` directly → error.
@@ -636,4 +664,34 @@ fn null_plain_member_still_errors() {
     let errs = check_errs(&p);
     assert_eq!(errs.len(), 1, "plain `.field` must still error, got {:?}", errs);
     assert!(errs[0].contains("`x`"), "{}", errs[0]);
+}
+
+/// A still-nullable name used inside a match-arm **guard** is flagged: the guard
+/// is a use-context like any other. `match 0: _ if x > 0:` over `x: Int?` errors.
+#[test]
+fn nullable_used_in_guard_errors() {
+    let gt = expr(ExprKind::Binary {
+        op: BinOp::Gt,
+        lhs: Box::new(name("x")),
+        rhs: Box::new(expr(ExprKind::Int(BigInt::from(0)))),
+    });
+    let arm = MatchArm {
+        pattern: Pattern { kind: PatternKind::Wildcard, span: sp() },
+        guard: Some(gt),
+        body: block(vec![stmt(StmtKind::Expr(expr(ExprKind::Int(BigInt::from(0)))))]),
+        span: sp(),
+    };
+    // Scrutinee is a literal (unresolvable), so only null-narrowing can fire.
+    let m = match_expr(expr(ExprKind::Int(BigInt::from(0))), vec![arm]);
+    let f = fn_one_param(
+        "f",
+        "x",
+        ty_named("Int", true),
+        None,
+        vec![stmt(StmtKind::Expr(m))],
+    );
+    let p = program(vec![f]);
+    let errs = check_errs(&p);
+    assert_eq!(errs.len(), 1, "expected one null error, got {:?}", errs);
+    assert!(errs[0].contains("`x`"), "should name x: {}", errs[0]);
 }

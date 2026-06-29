@@ -251,6 +251,11 @@ impl<'a> NullNarrowing<'a> {
                 self.check_expr_uses(&m.scrutinee, scope);
                 for arm in &m.arms {
                     let mut inner = scope.clone();
+                    // A guard is evaluated in the arm's pattern-bound scope; its
+                    // sub-expressions are use-contexts like any other.
+                    if let Some(guard) = &arm.guard {
+                        self.check_expr_uses(guard, &inner);
+                    }
                     self.check_stmts(&arm.body.stmts, &mut inner);
                 }
             }

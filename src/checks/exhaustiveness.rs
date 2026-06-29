@@ -184,10 +184,13 @@ impl<'a> Exhaustiveness<'a> {
         match &e.kind {
             ExprKind::Match(m) => {
                 self.check_match(m, e.span, scope);
-                // Recurse into scrutinee and arm bodies too.
+                // Recurse into the scrutinee, each arm's guard, and arm bodies.
                 self.check_expr(&m.scrutinee, scope);
                 for arm in &m.arms {
                     let mut inner = scope.clone();
+                    if let Some(guard) = &arm.guard {
+                        self.check_expr(guard, &inner);
+                    }
                     self.check_stmts(&arm.body.stmts, &mut inner);
                 }
             }
