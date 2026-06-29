@@ -7,6 +7,7 @@
     // only ever build the AST node, so import it explicitly to disambiguate.
     use crate::ast::Binding;
     use num_bigint::BigInt;
+    use std::cell::RefCell;
 
     // ---- tiny AST constructors -------------------------------------------
 
